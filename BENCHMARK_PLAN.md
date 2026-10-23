@@ -9,7 +9,7 @@ Oct 19, 2026 · @Seungjoon Lee
 계획은 세 가지 원칙을 따릅니다.
 
 - **파이프라인 코어의 원칙을 깨지 않습니다.** 외부 벤치마크를 위해 "IR이 유일한 소스"라는 원칙이나 생성·검증 격리 규칙을 우회하지 않습니다. 따라서 기존 RTL 코드의 빈칸 채우기(Masked-Content)나 줄 단위 패치(Bug Fixing) 트랙은 제외하고, **자연어 SPEC과 포트 정의로부터 모듈 트리 전체를 생성·방출하는 트랙**만 평가 대상으로 삼습니다.
-- **이미 구축된 결정론적 도구를 최대한 재사용합니다.** P11에서 구현한 구조 추출기(`pipeline/importer/r1.py`), SPEC 2~4절 표 생성기(`pipeline/importer/spec_tables.py`), SPEC 검사 게이트(`pipeline/spec/check.py`), 오픈소스 EDA 래퍼(`department/bin/eda`)를 그대로 활용합니다.
+- **이미 구축된 결정론적 도구를 최대한 재사용합니다.** P11에서 구현한 구조 추출기(`pipeline/importer/r1.py`), SPEC 2~4절 표 생성기(`pipeline/importer/spec_tables.py`), SPEC 검사 게이트(`pipeline/spec/check.py`), 오픈소스 EDA 호출(`experiments/bench/common/runner.py`의 Yosys 호출(`evaluate_ppa`, `yosys_lec`). 원본 저장소의 `department/bin/eda`와 같은 Yosys 명령)을 활용합니다.
 - **공통 어댑터 하나에 벤치마크별 로더만 얹습니다.** 벤치마크마다 파이프라인을 따로 만들지 않고, ① 입력 변환(Prompt + 헤더 → 10개 섹션 `spec.md`), ② 무인 스케줄러 실행(`Run`), ③ 외부 채점기 호출(원본 TB 또는 Yosys LEC)의 3단계 공통 러너 위에서 5개 벤치마크를 모두 돌립니다.
 
 ---
@@ -18,11 +18,11 @@ Oct 19, 2026 · @Seungjoon Lee
 
 | 단계 | 벤치마크 | 적용 트랙 / 범위 | 예상 문제 수 | 채점 기준 | 선정 목적 |
 | --- | --- | --- | --- | --- | --- |
-| **B1** | **RTLLM 2.0** | 동기식(Sequential) 설계 문제<br>(FIFO, FSM, 직병렬 변환, 산술·제어 블록) | ~35개<br>(전체 50개 중 클럭 있는 블록) | 원본 `testbench.v` (`iverilog`) + `eda synth`/`sta` (PPA) | 어댑터(SPEC 변환 + 무인 실행) 검증 및 기본 통과율·PPA 측정 |
+| **B1** | **RTLLM 2.0** | 동기식(Sequential) 설계 문제<br>(FIFO, FSM, 직병렬 변환, 산술·제어 블록) | ~35개<br>(전체 50개 중 클럭 있는 블록) | 원본 `testbench.v` (`iverilog`) + Yosys 합성 (`evaluate_ppa`) | 어댑터(SPEC 변환 + 무인 실행) 검증 및 기본 통과율·PPA 측정 |
 | **B2** | **ChipVerilog** | 전체 64개 타겟<br>(Standalone / Multi-module / Cross-module, 5대 IP: OR1200, FPU, MIPS-16, I2C, CORDIC) | 64개<br>(중앙값 268줄, 최대 1,000줄+) | 원본 시뮬레이션 TB + 부분 등가성 검사 | 중대형·계층형 IP에서 **Architect 모듈 분해 + 하위 셀(`cells`) 재사용** 성능 입증 |
 | **B3** | **RealBench** | 모듈 레벨 & 시스템 레벨 IP 생성<br>(UART, SPI, AES 등 오픈소스 IP) | 수십 개 모듈 및 시스템 Top | 원본 Verilator / Yosys 시뮬레이션 및 형식 검증 | 구조화된 명세 문서 기반의 실전 멀티모듈 통합 검증 능력 평가 |
 | **B4** | **CVDP** | `cid003` (NL Spec-to-RTL)<br>`cid005` (Spec-to-RTL with Module Reuse) | 수백 개<br>(동기식 설계 필터링) | CVDP 공식 Docker 하니스 (`cocotb` / `iverilog` / `Verilator`) | 산업계 최신 에이전트 벤치마크 기준의 표준 지표(`pass@1`) 확보 |
-| **B5** | **RTL-BenchLS** | `Round-Trip Reasoning`<br>(원본 RTL → SPEC 추출 → RTL 재생성) | 샘플링 세트 (100~300개 동기식 모듈) | `department/bin/eda lec`<br>(Yosys `equiv` + `miter` BMC) | 수작업 TB 없이 `pipeline.scheduler.port`(P11)와 연계한 대규모 재현성 평가 |
+| **B5** | **RTL-BenchLS** | `Round-Trip Reasoning`<br>(원본 RTL → SPEC 추출 → RTL 재생성) | 샘플링 세트 (100~300개 동기식 모듈) | `yosys_lec`<br>(Yosys `equiv` + `miter` BMC) | 수작업 TB 없이 `pipeline.scheduler.port`(P11)와 연계한 대규모 재현성 평가 |
 
 ### 제외 범위 (명시적 제외)
 
@@ -50,7 +50,7 @@ flowchart LR
 
   subgraph Eval["3. 외부 채점 하니스"]
     EMIT --> TB["외부 TB 실행<br/>(iverilog / Verilator / cocotb)"]
-    EMIT --> LEC["형식 등가성 및 PPA<br/>(eda synth / sta / lec)"]
+    EMIT --> LEC["형식 등가성 및 PPA<br/>(Yosys synth / lec)"]
   end
 ```
 
@@ -63,17 +63,16 @@ flowchart LR
 | 자연어 프롬프트 → 10개 섹션 `spec.md` 변환 | `pipeline/agents/spec_writer.py`, `pipeline/spec/check.py` | 원본 RTL 없이 **벤치마크 자연어 프롬프트 + `tables.md`**만 보고 10개 섹션 SPEC을 작성하는 `bench_spec_writer` 프롬프트 변형 추가 (B5 RTL-BenchLS는 기존 `spec_writer` 그대로 사용) |
 | 파이프라인 실행 및 후보 선택 | `pipeline/scheduler/run.py` (`Run`), `experiments/p8a/pilot.py` | `awaiting_approval` 발생 시 자동 결정을 내리고 이어서 도는 무인 루프(`auto_approve`) 추가 |
 | 하위 모듈(IP/셀) 재사용 (`cid005`, ChipVerilog) | `Run(..., cells=...)` 및 L1 `external` 모듈 | 벤치마크가 제공하는 하위 `.v`/`.sv` 파일들을 `cells`로 전달하고 L1 참조 연결 |
-| 합성·면적·타이밍(PPA) 및 LEC 채점 | `department/bin/eda` (`lint`, `synth`, `sta`, `lec`, `comb`) | 그대로 호출하여 벤치마크 결과 JSON에 셀 수, 최악 경로 지연, LEC 통과 여부 기록 |
+| 합성·면적·타이밍(PPA) 및 LEC 채점 | `experiments/bench/common/runner.py`의 Yosys 호출(`evaluate_ppa`, `yosys_lec`) | 벤치마크 결과 JSON에 셀 수, 조합 루프, LEC 통과 여부 기록. STA(최악 경로 지연)는 아직 없음 |
 
 ---
 
 ## 3. 저장소 구조 (추가)
 
 ```
-chip-design-depart/
+rtl-factory/
 ├── BENCHMARK_PLAN.md
 ├── experiments/
-│   ├── p0/
 │   ├── p8a/
 │   └── bench/                      # 벤치마크 평가 프레임워크
 │       ├── README.md               # 데이터셋 내려받기 경로, 실행 명령, 결과 요약
@@ -81,13 +80,13 @@ chip-design-depart/
 │       │   ├── schema.py           # 표준 문제 형식 (BenchItem: id, top, prompt, header_sv, cells, tb_info)
 │       │   ├── to_spec.py          # 헤더 L1 추출(r1 + spec_tables) + BenchSpecWriter 호출 + spec.check 게이트
 │       │   ├── runner.py           # 무인 Run 실행기 (auto_approve 정책, quota 재개, 결과 집계)
-│       │   └── metrics.py          # pass@1, 후보별(SV/Python) 통과율, 에이전트 호출 수, PPA(eda synth/sta) 집계
+│       │   └── metrics.py          # pass@1, 후보별(SV/Python) 통과율, 에이전트 호출 수, PPA(Yosys 합성 셀 수) 집계
 │       ├── adapters/
 │       │   ├── rtllm.py            # B1: RTLLM 2.0 로더 및 iverilog 채점 래퍼
 │       │   ├── chipverilog.py      # B2: ChipVerilog 로더 (include/define 처리, Standalone/Multi/Cross 분류)
 │       │   ├── realbench.py        # B3: RealBench 로더 및 Verilator/Yosys 채점 래퍼
 │       │   ├── cvdp.py             # B4: CVDP JSONL 로더 (cid003, cid005 필터) 및 Docker 하니스 호출기
-│       │   └── rtl_benchls.py      # B5: RTL-BenchLS Round-Trip 로더 (port.py R1~R5 + Run + eda lec)
+│       │   └── rtl_benchls.py      # B5: RTL-BenchLS Round-Trip 로더 (port.py R1~R5 + Run + yosys_lec)
 │       └── run_bench.py            # 통합 CLI 진입점
 └── tests/
     └── test_bench_adapter.py       # 가짜 에이전트로 어댑터·무인 승인·채점 흐름 단위 시험
@@ -147,8 +146,8 @@ chip-design-depart/
 ### 4.4 방출 RTL 패키징 및 외부 채점 (`eval_harness`)
 
 1. 파이프라인이 `pass`로 끝나면 선택된 후보(`chosen`, 예: `c0` 또는 `c1`)의 모든 모듈 IR을 SV로 방출합니다.
-2. 파이프라인이 `failed`로 끝났더라도 후보 중 마지막 IR이 모두 존재하는 묶음이 있으면, [pilot.py](file:///Users/sjlee/Workspace/Project/chip-design-depart/experiments/p8a/pilot.py#L58-L75)와 마찬가지로 **후보별(`c0` SV, `c1` Python) 방출 RTL을 외부 채점기에 넣어 각각 통과 여부를 기록**합니다 (`pass_pipeline_and_bench` vs `pass_bench_only` 구분).
-3. 방출된 SV 파일들과 `cells`를 모아 각 벤치마크의 채점기(`iverilog`, `verilator`, CVDP Docker, `eda lec`)를 돌리고, 통과한 설계에 대해서는 `department/bin/eda synth` 및 `eda sta`를 실행해 합성 셀 수와 최악 경로 지연을 함께 수집합니다.
+2. 파이프라인이 `failed`로 끝났더라도 후보 중 마지막 IR이 모두 존재하는 묶음이 있으면, [pilot.py](./experiments/p8a/pilot.py#L58-L75)와 마찬가지로 **후보별(`c0` SV, `c1` Python) 방출 RTL을 외부 채점기에 넣어 각각 통과 여부를 기록**합니다 (`pass_pipeline_and_bench` vs `pass_bench_only` 구분).
+3. 방출된 SV 파일들과 `cells`를 모아 각 벤치마크의 채점기(`iverilog`, `verilator`, CVDP Docker, `yosys_lec`)를 돌리고, 통과한 설계에 대해서는 `evaluate_ppa`(Yosys 합성과 조합 루프 검사)로 합성 셀 수를 함께 수집합니다 (STA는 아직 없음).
 
 ---
 
@@ -175,7 +174,7 @@ flowchart LR
 3. `experiments/bench/common/runner.py`:
    - `Run` 실행 및 `waiting_approval` 시 4.3절 규칙에 따른 자동 결정(`approve.py` API 호출)
    - `paused_quota` 발생 시 상태 보존 및 재개(`--resume`) 지원
-   - 후보별(`c0` SV, `c1` Python) 방출 RTL 추출 및 `eda synth`/`sta`/`comb` 실행
+   - 후보별(`c0` SV, `c1` Python) 방출 RTL 추출 및 `evaluate_ppa`(Yosys 합성, 조합 루프) 실행
 4. `experiments/bench/run_bench.py`: `--bench`, `--filter`, `--limit`, `--roles`, `--auto-approve`, `--resume` 옵션을 가진 통합 CLI 작성
 5. `tests/test_bench_adapter.py`: 가짜 에이전트로 헤더 추출 → SPEC 생성 → 무인 승인(기댓값 승인 1회, 충돌 재구성 1회) → 외부 TB 채점까지 이어지는 단위 시험 작성
 
@@ -200,7 +199,7 @@ flowchart LR
 
 #### 완료 기준
 - [ ] 파일럿 5개 블록에서 SPEC 변환 게이트 5/5 통과 및 외부 `testbench.v` 채점 정상 동작 확인
-- [ ] RTLLM 2.0 동기식 문제 전체에 대해 구문 통과율(Syntax), 기능 통과율(`pass@1`, SV 후보 vs Python 후보), 합성 성공률 및 PPA(`eda synth`/`sta`) 표가 `build/bench/rtllm/summary.json`에 기록됨
+- [ ] RTLLM 2.0 동기식 문제 전체에 대해 구문 통과율(Syntax), 기능 통과율(`pass@1`, SV 후보 vs Python 후보), 합성 성공률 및 PPA(Yosys 합성 셀 수) 표가 `build/bench/rtllm/summary.json`에 기록됨
 
 ---
 
@@ -257,14 +256,14 @@ NVIDIA의 **CVDP** 데이터셋에서 본 프로젝트의 목적에 맞는 RTL �
 
 ### B5. RTL-BenchLS 적용 (`Round-Trip Reasoning` + Yosys LEC)
 
-수작업 테스트벤치 없이 형식 등가성(LEC)으로 평가하는 **RTL-BenchLS**의 `Round-Trip` 트랙은 이미 구현된 **P11(`pipeline/scheduler/port.py`)** 및 **`department/bin/eda lec`**과 직결됩니다.
+수작업 테스트벤치 없이 형식 등가성(LEC)으로 평가하는 **RTL-BenchLS**의 `Round-Trip` 트랙은 이미 구현된 **P11(`pipeline/scheduler/port.py`)** 및 **`yosys_lec`** 채점과 직결됩니다.
 
 #### 작업
 1. `experiments/bench/adapters/rtl_benchls.py` 구현:
    - RTL-BenchLS의 검증된 원본 Verilog 디자인(`gold.v`)을 입력으로 받아 `pipeline.importer.r1`으로 L1 추출 및 `r2` 자동 응답 수행
    - 전체 Porter(R3~R4)를 다 돌리지 않고도 원본 RTL과 `tables.md`, `refsim` 도구를 `SpecWriter`(`pipeline/agents/spec_writer.py`)에 주어 10개 섹션 `spec.md`를 생성(R5 경량 경로)
    - 생성된 `spec.md`만으로(원본 RTL 없이) `Run`을 무인 실행해 재생성 RTL(`gate`) 방출
-   - `department/bin/eda lec`(Yosys `equiv_make` + `miter` 순차 BMC)로 원본 RTL(`gold`)과 재생성 RTL(`gate`)의 형식 등가성을 판정
+   - `yosys_lec`(Yosys `equiv_make` + `miter` 순차 BMC)로 원본 RTL(`gold`)과 재생성 RTL(`gate`)의 형식 등가성을 판정
 2. 필요 시 P11 R6의 루프(불일치 시 반례 자극을 뽑아 Arbiter가 `spec_gap`인지 `regen_defect`인지 판정)를 켜서 1회 왕복(`pass@round1`)과 SPEC 보정 후 왕복(`pass@r6`)을 함께 측정
 
 #### 완료 기준
@@ -290,4 +289,4 @@ NVIDIA의 **CVDP** 데이터셋에서 본 프로젝트의 목적에 맞는 RTL �
    - `converter_gap`: 프롬프트에는 있었으나 `BenchSpecWriter`가 `spec.md`로 옮기면서 빠뜨린 경우
    - `verifier_miss`: `spec.md`에는 있었으나 파이프라인의 두 Verifier가 모두 놓친 코너 케이스
 4. **합성 및 물리 지표 (PPA):**
-   - `eda synth` 통과율, 게이트 셀 수(`cells`), `eda sta` 최악 경로 지연(ns), `eda comb` 조합 루프 0건 확인
+   - Yosys 합성 통과율, 게이트 셀 수(`cells`), 조합 루프 0건 확인 (`evaluate_ppa`). 최악 경로 지연(STA)은 아직 없음
