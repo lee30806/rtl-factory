@@ -1,0 +1,46 @@
+{
+  "_note": "P11 R6 4회차용 (2026-10-17 사용자 결정): 모든 역할 Claude Code CLI claude-haiku-5-5, effort high. 나머지는 roles.port-haiku.json과 같음. 예산은 지금까지 147회에 4회차 재생성과 판정 몫을 더해 220. 2026-10-18 사용자 결정: 5회차를 위해 SPEC 고치기 상한 4, 같은 날 6회차를 위해 5",
+  "agents": "config/agents/agents.claude-haiku-high.json",
+  "roles": {
+    "architect": {
+      "agent": "cc-haiku-high-verifier",
+      "count": 1
+    },
+    "author": {
+      "agent": "cc-haiku-high-author",
+      "count": 2,
+      "langs": [
+        "sv",
+        "py"
+      ]
+    },
+    "verifier": {
+      "agent": "cc-haiku-high-verifier",
+      "count": 2
+    },
+    "repair": {
+      "agent": "cc-haiku-high-author",
+      "count": 1
+    },
+    "arbiter": {
+      "agent": "cc-haiku-high-verifier",
+      "count": 1
+    },
+    "porter": {
+      "agent": "cc-haiku-high-author",
+      "count": 1
+    },
+    "spec_writer": {
+      "agent": "cc-haiku-high-verifier",
+      "count": 1
+    }
+  },
+  "limits": {
+    "repair_per_candidate": 3,
+    "arbiter_after_repeats": 2,
+    "agent_retries": 1,
+    "budget_agent_runs": 220,
+    "porter_fix": 3,
+    "spec_revise": 5
+  }
+}

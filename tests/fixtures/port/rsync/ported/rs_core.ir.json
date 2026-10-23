@@ -1,0 +1,48 @@
+{
+ "module": "rs_core",
+ "role": "module",
+ "params": [],
+ "domains": [
+  {
+   "name": "sys",
+   "clock": "clk",
+   "edge": "pos",
+   "reset": {
+    "port": "rst_n",
+    "active": "low",
+    "async": true
+   }
+  }
+ ],
+ "ports": [
+  {
+   "name": "d",
+   "dir": "input",
+   "type": "logic [7:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "q",
+   "dir": "output",
+   "type": "logic [7:0]",
+   "domain": "sys",
+   "kind": "reg",
+   "reset": "8'd0"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_acc",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "q",
+    "d"
+   ],
+   "writes": [
+    "q"
+   ],
+   "body": "q <= q + d;"
+  }
+ ]
+}

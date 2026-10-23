@@ -1,0 +1,18 @@
+__pycache__
+.pytest_cache
+*.swp
+.DS_Store
+.venv/
+build/
+*.egg-info/
+
+# cocotb 결과 파일
+tests/sim/*.result.xml
+results.xml
+
+# 에이전트 도구 기록과 refsim 작업 파일
+.tools.log
+.refsim/
+
+# 로컬 벤치마크 계획 (저장소에 올리지 않음)
+BENCHMARK_PLAN.md

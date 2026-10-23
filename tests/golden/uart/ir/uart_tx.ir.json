@@ -1,0 +1,29 @@
+{
+  "module": "uart_tx",
+  "role": "module",
+  "params": [{ "name": "DATA_WIDTH", "type": "int", "default": "8" }],
+  "domains": [{ "name": "sys", "clock": "clk", "edge": "pos",
+                "reset": { "port": "rst", "active": "high", "async": false } }],
+  "ports": [
+    { "bundle": "s_axis", "protocol": "valid_ready", "role": "sink", "domain": "sys",
+      "signals": [
+        { "name": "s_axis_tdata",  "dir": "input",  "type": "logic [DATA_WIDTH-1:0]" },
+        { "name": "s_axis_tvalid", "dir": "input",  "type": "logic" },
+        { "name": "s_axis_tready", "dir": "output", "type": "logic", "kind": "reg", "reset": "1'b0" }
+      ] },
+    { "name": "txd", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b1" },
+    { "name": "busy", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b0" },
+    { "name": "prescale", "dir": "input", "type": "logic [15:0]", "domain": "sys" }
+  ],
+  "signals": [
+    { "name": "data_reg",     "kind": "reg", "type": "logic [DATA_WIDTH:0]", "domain": "sys", "reset": "'0" },
+    { "name": "prescale_reg", "kind": "reg", "type": "logic [18:0]",         "domain": "sys", "reset": "'0" },
+    { "name": "bit_cnt",      "kind": "reg", "type": "logic [3:0]",          "domain": "sys", "reset": "'0" }
+  ],
+  "blocks": [
+    { "id": "k_tx", "kind": "seq", "domain": "sys",
+      "reads": ["prescale_reg", "bit_cnt", "s_axis_tvalid", "s_axis_tready", "prescale", "s_axis_tdata", "data_reg"],
+      "writes": ["s_axis_tready", "prescale_reg", "busy", "bit_cnt", "data_reg", "txd"],
+      "body": "if (prescale_reg > 0) begin\n  s_axis_tready <= 1'b0;\n  prescale_reg <= prescale_reg - 19'd1;\nend else if (bit_cnt == 0) begin\n  s_axis_tready <= 1'b1;\n  busy <= 1'b0;\n  if (s_axis_tvalid) begin\n    s_axis_tready <= !s_axis_tready;\n    prescale_reg <= {prescale, 3'b000} - 19'd1;\n    bit_cnt <= 4'(DATA_WIDTH + 1);\n    data_reg <= {1'b1, s_axis_tdata};\n    txd <= 1'b0;\n    busy <= 1'b1;\n  end\nend else begin\n  if (bit_cnt > 1) begin\n    bit_cnt <= bit_cnt - 4'd1;\n    prescale_reg <= {prescale, 3'b000} - 19'd1;\n    {data_reg, txd} <= {1'b0, data_reg};\n  end else if (bit_cnt == 1) begin\n    bit_cnt <= bit_cnt - 4'd1;\n    prescale_reg <= {prescale, 3'b000};\n    txd <= 1'b1;\n  end\nend" }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+ "module": "dec",
+ "role": "module",
+ "params": [],
+ "domains": [],
+ "ports": [
+  {
+   "name": "sel",
+   "dir": "input",
+   "type": "logic [1:0]",
+   "domain": null
+  },
+  {
+   "name": "onehot",
+   "dir": "output",
+   "type": "logic [3:0]",
+   "domain": null,
+   "kind": "wire"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_dec",
+   "kind": "comb",
+   "reads": [
+    "sel"
+   ],
+   "writes": [
+    "onehot"
+   ],
+   "body": "onehot = 4'b0000;\nonehot[sel] = 1'b1;"
+  }
+ ]
+}

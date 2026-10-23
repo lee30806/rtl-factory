@@ -1,0 +1,15 @@
+{
+  "_note": "역할별 coding agent와 후보 수. agents는 에이전트 설정 파일(런타임 명령, 모델, 계열). 2026-10-11 사용자 지정: agy, Author는 gemini-3.8-flash-high, 나머지는 gemini-3.1-pro-high. 2026-10-13 agy에서 3.1 Pro가 빠져 나머지를 claude-opus-5-5-high로 바꿨다가 Claude 한도 때문에 gemini-3.8-flash-high로 바꿈 (사용자 결정, Author와 같은 모델). 16:37 Gemini 주간 한도로 모든 역할을 claude-sonnet-5-5-low로 바꿈 (사용자 결정). 16:53 agy의 Claude 한도도 차서 사용자 결정으로 coding agent를 Claude Code CLI(agents.claude.json, Sonnet, effort low)로 바꿈. author.langs는 후보마다 조각 언어(sv, py)이고 후보 c는 langs[c % 길이]. 2026-10-14 사용자 결정(P8a 비교 결과): 후보 0은 SV, 후보 1은 Python. 2026-10-16 P11: porter(원본 RTL 이식)는 Author와 같은 에이전트, spec_writer(원본에서 SPEC 작성)는 Verifier와 같은 에이전트. porter_fix는 R4 불일치 뒤 Porter 고치기 상한, spec_revise는 R6 SPEC 고치기 상한. 2026-10-23 사용자 지정: coding agent를 agy(agents.agy.json), 모델을 gemini-3.8-flash-medium으로 변경",
+  "agents": "config/agents/agents.agy.json",
+  "roles": {
+    "architect": {"agent": "agy-verifier", "count": 1},
+    "author":    {"agent": "agy-author",   "count": 2, "langs": ["sv", "py"]},
+    "verifier":  {"agent": "agy-verifier", "count": 2},
+    "repair":    {"agent": "agy-author",   "count": 1},
+    "arbiter":   {"agent": "agy-verifier", "count": 1},
+    "porter":    {"agent": "agy-author",   "count": 1},
+    "spec_writer": {"agent": "agy-verifier", "count": 1}
+  },
+  "limits": {"repair_per_candidate": 3, "arbiter_after_repeats": 2, "agent_retries": 1, "budget_agent_runs": 60,
+             "porter_fix": 3, "spec_revise": 3}
+}

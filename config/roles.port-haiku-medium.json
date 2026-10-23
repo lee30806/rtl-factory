@@ -1,0 +1,46 @@
+{
+  "_note": "P11 axis_async_fifo R6 재수행 (2026-10-22 사용자 결정): 모든 역할 Claude Code CLI claude-haiku-5-5, effort medium. 리셋 함께 걸기(R6 joint_reset), 하니스 send 사이클 수정, SpecWriter 다중 클럭 리셋 규칙 적용 뒤. 나머지는 roles.port-haiku-high.json과 같음",
+  "agents": "config/agents/agents.claude-haiku-medium.json",
+  "roles": {
+    "architect": {
+      "agent": "cc-haiku-medium-verifier",
+      "count": 1
+    },
+    "author": {
+      "agent": "cc-haiku-medium-author",
+      "count": 2,
+      "langs": [
+        "sv",
+        "py"
+      ]
+    },
+    "verifier": {
+      "agent": "cc-haiku-medium-verifier",
+      "count": 2
+    },
+    "repair": {
+      "agent": "cc-haiku-medium-author",
+      "count": 1
+    },
+    "arbiter": {
+      "agent": "cc-haiku-medium-verifier",
+      "count": 1
+    },
+    "porter": {
+      "agent": "cc-haiku-medium-author",
+      "count": 1
+    },
+    "spec_writer": {
+      "agent": "cc-haiku-medium-verifier",
+      "count": 1
+    }
+  },
+  "limits": {
+    "repair_per_candidate": 3,
+    "arbiter_after_repeats": 2,
+    "agent_retries": 1,
+    "budget_agent_runs": 220,
+    "porter_fix": 3,
+    "spec_revise": 5
+  }
+}

@@ -1,0 +1,57 @@
+{
+ "module": "add8_core",
+ "role": "module",
+ "params": [],
+ "domains": [],
+ "ports": [
+  {
+   "name": "a",
+   "dir": "input",
+   "type": "logic [7:0]",
+   "domain": null
+  },
+  {
+   "name": "b",
+   "dir": "input",
+   "type": "logic [7:0]",
+   "domain": null
+  },
+  {
+   "name": "cin",
+   "dir": "input",
+   "type": "logic",
+   "domain": null
+  },
+  {
+   "name": "sum",
+   "dir": "output",
+   "type": "logic [7:0]",
+   "domain": null,
+   "kind": "wire"
+  },
+  {
+   "name": "cout",
+   "dir": "output",
+   "type": "logic",
+   "domain": null,
+   "kind": "wire"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_add",
+   "kind": "comb",
+   "reads": [
+    "a",
+    "b",
+    "cin"
+   ],
+   "writes": [
+    "sum",
+    "cout"
+   ],
+   "body": "sum = a + b + cin\ncout = cat(u(1, 0), a) + b + cin > 255"
+  }
+ ],
+ "lang": "py"
+}

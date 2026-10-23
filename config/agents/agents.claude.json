@@ -1,0 +1,53 @@
+{
+  "agents": [
+    {
+      "name": "cc-author",
+      "family": "Claude",
+      "runtime": "claude-code",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--effort",
+        "low",
+        "--dangerously-skip-permissions",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence"
+      ],
+      "model": "sonnet",
+      "env": {},
+      "vision": true,
+      "timeout_s": 1500,
+      "_note": "2026-10-13 사용자 결정: coding agent를 agy에서 Claude Code CLI(2.1.295)로 바꾸고 모델은 Sonnet(sonnet 별칭), effort low. 인증은 CLI 로그인(OAuth). 사용자 설정·훅·플러그인·MCP·스킬을 읽지 않도록 --setting-sources \"\", --strict-mcp-config, --disable-slash-commands. Author와 Verifier가 같은 모델이라 MODEL_FAMILY 경고가 난다"
+    },
+    {
+      "name": "cc-verifier",
+      "family": "Claude",
+      "runtime": "claude-code",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--effort",
+        "low",
+        "--dangerously-skip-permissions",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence"
+      ],
+      "model": "sonnet",
+      "env": {},
+      "vision": true,
+      "timeout_s": 1500
+    }
+  ]
+}

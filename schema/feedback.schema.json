@@ -1,0 +1,78 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "feedback.schema.json",
+ "title": "환류 (부서 → 파이프라인)",
+ "description": "Design-lead가 제출하는 수정 요구 네 형태. 다른 형태나 필드는 받지 않는다.",
+ "oneOf": [
+  {
+   "title": "검사 실패 리포트",
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["form", "run_id", "by", "format", "report"],
+   "properties": {
+    "form": {"const": "check_report"},
+    "run_id": {"type": "string", "minLength": 1},
+    "by": {"type": "string", "minLength": 1},
+    "format": {"type": "string", "minLength": 1, "description": "config/report_formats의 양식 이름"},
+    "report": {"type": "string", "minLength": 1, "description": "리포트 원문"},
+    "source": {"type": "string", "description": "발생원 (Sanity, 합성, LEC 등)"},
+    "note": {"type": "string"}
+   }
+  },
+  {
+   "title": "SPEC 변경 요청",
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["form", "run_id", "by", "spec", "reason"],
+   "properties": {
+    "form": {"const": "spec_change"},
+    "run_id": {"type": "string", "minLength": 1},
+    "by": {"type": "string", "minLength": 1},
+    "spec": {"type": "string", "minLength": 1, "description": "개정한 SPEC(Markdown) 원문"},
+    "reason": {"type": "string", "minLength": 1},
+    "source": {"enum": ["dv_bug", "sta", "other"], "description": "DV 기능 버그는 예시 시나리오로 추가한다"},
+    "note": {"type": "string"}
+   }
+  },
+  {
+   "title": "생성기 버그 리포트",
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["form", "by", "description"],
+   "properties": {
+    "form": {"const": "generator_bug"},
+    "run_id": {"type": "string"},
+    "by": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "evidence": {"type": "string", "description": "골격 코드의 위반을 보이는 리포트나 코드 조각"},
+    "note": {"type": "string"}
+   }
+  },
+  {
+   "title": "설정 변경",
+   "type": "object",
+   "additionalProperties": false,
+   "required": ["form", "by", "config"],
+   "properties": {
+    "form": {"const": "config_change"},
+    "by": {"type": "string", "minLength": 1},
+    "config": {
+     "type": "object",
+     "additionalProperties": false,
+     "minProperties": 1,
+     "properties": {
+      "author_count": {"type": "integer", "minimum": 1, "maximum": 4},
+      "author_langs": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"enum": ["sv", "py"]},
+                       "description": "Author 후보 c의 조각 언어는 author_langs[c % 길이]"},
+      "verifier_count": {"type": "integer", "minimum": 1, "maximum": 4},
+      "budget_agent_runs": {"type": "integer", "minimum": 1},
+      "repair_per_candidate": {"type": "integer", "minimum": 1},
+      "agents": {"type": "object", "additionalProperties": {"type": "string"},
+                 "description": "역할 → 에이전트 이름 (config/roles.json의 agents 파일에 있는 이름)"}
+     }
+    },
+    "note": {"type": "string"}
+   }
+  }
+ ]
+}

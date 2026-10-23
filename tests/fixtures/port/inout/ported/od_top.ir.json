@@ -1,0 +1,81 @@
+{
+  "module": "od_top",
+  "role": "block_top",
+  "params": [],
+  "domains": [
+    {
+      "name": "sys",
+      "clock": "clk",
+      "edge": "pos",
+      "reset": {
+        "port": "rst_n",
+        "active": "low",
+        "async": true
+      }
+    }
+  ],
+  "ports": [
+    {
+      "name": "sda",
+      "dir": "inout",
+      "type": "logic",
+      "domain": "sys"
+    },
+    {
+      "name": "shift",
+      "dir": "output",
+      "type": "logic [7:0]",
+      "domain": "sys",
+      "kind": "wire"
+    }
+  ],
+  "instances": [
+    {
+      "name": "u_ctrl",
+      "module": "od_ctrl",
+      "domain_map": {
+        "sys": "sys"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "c_u_ctrl_sda_i",
+      "from": "self.sda_in",
+      "to": "u_ctrl.sda_i"
+    },
+    {
+      "id": "c_u_ctrl_sda_oe",
+      "from": "u_ctrl.sda_oe",
+      "to": "self.sda_oe"
+    },
+    {
+      "id": "c_u_ctrl_shift",
+      "from": "u_ctrl.shift",
+      "to": "self.shift"
+    }
+  ],
+  "signals": [
+    {
+      "name": "sda_in",
+      "kind": "wire",
+      "type": "logic"
+    },
+    {
+      "name": "sda_oe",
+      "kind": "wire",
+      "type": "logic"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "t_sda",
+      "kind": "tristate",
+      "pad": "sda",
+      "oe": "sda_oe",
+      "i": "sda_in",
+      "domain": "sys",
+      "style": "open_drain"
+    }
+  ]
+}

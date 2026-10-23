@@ -1,0 +1,182 @@
+{
+  "module": "fn_mod",
+  "role": "module",
+  "lang": "py",
+  "params": [],
+  "domains": [
+    {
+      "name": "sys",
+      "clock": "clk",
+      "edge": "pos",
+      "reset": {
+        "port": "rst_n",
+        "active": "low",
+        "async": true
+      }
+    }
+  ],
+  "ports": [
+    {
+      "name": "a",
+      "dir": "input",
+      "type": "logic [7:0]",
+      "domain": "sys"
+    },
+    {
+      "name": "b",
+      "dir": "input",
+      "type": "logic [7:0]",
+      "domain": "sys"
+    },
+    {
+      "name": "y",
+      "dir": "output",
+      "type": "logic [7:0]",
+      "domain": "sys",
+      "kind": "wire"
+    },
+    {
+      "name": "z",
+      "dir": "output",
+      "type": "logic [7:0]",
+      "domain": "sys",
+      "kind": "wire"
+    },
+    {
+      "name": "q",
+      "dir": "output",
+      "type": "logic [7:0]",
+      "domain": "sys",
+      "kind": "reg",
+      "reset": "8'd0"
+    }
+  ],
+  "signals": [
+    {
+      "name": "z_hi",
+      "kind": "wire",
+      "type": "logic [3:0]"
+    },
+    {
+      "name": "z_lo",
+      "kind": "wire",
+      "type": "logic [3:0]"
+    }
+  ],
+  "functions": [
+    {
+      "name": "mix",
+      "kind": "function",
+      "ret": "logic [7:0]",
+      "args": [
+        {
+          "name": "x",
+          "dir": "input",
+          "type": "logic [7:0]"
+        },
+        {
+          "name": "w",
+          "dir": "input",
+          "type": "logic [7:0]"
+        }
+      ],
+      "vars": [
+        {
+          "name": "t",
+          "type": "logic [7:0]"
+        }
+      ],
+      "body": "t = x + w\nreturn t ^ 0x0F"
+    },
+    {
+      "name": "rot",
+      "kind": "function",
+      "ret": "logic [7:0]",
+      "args": [
+        {
+          "name": "x",
+          "dir": "input",
+          "type": "logic [7:0]"
+        },
+        {
+          "name": "k",
+          "dir": "input",
+          "type": "logic [2:0]"
+        }
+      ],
+      "vars": [
+        {
+          "name": "acc",
+          "type": "logic [7:0]"
+        }
+      ],
+      "body": "acc = x\nfor i in range(8):\n    if i < k:\n        acc = cat(acc[6:0], acc[7])\nreturn mix(acc, 1)"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "c_y",
+      "kind": "comb",
+      "body": "y = mix(a, b)"
+    },
+    {
+      "id": "c_z",
+      "kind": "comb",
+      "body": "z_hi = (a ^ b) >> 4\nz_lo = (a ^ b) ^ z_hi\nz = cat(z_hi, z_lo)"
+    },
+    {
+      "id": "k_q",
+      "kind": "seq",
+      "domain": "sys",
+      "body": "q = rot(q ^ a, b[2:0])"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "p_y",
+      "kind": "assert",
+      "domain": "sys",
+      "reads": [
+        "y",
+        "a",
+        "b"
+      ],
+      "expr": "y == mix(a, b)",
+      "req": [
+        "FN-01"
+      ]
+    },
+    {
+      "id": "p_z",
+      "kind": "assert",
+      "domain": "sys",
+      "reads": [
+        "z",
+        "a",
+        "b"
+      ],
+      "expr": "z[7:4] == (a[7:4] ^ b[7:4])",
+      "req": [
+        "FN-02"
+      ]
+    },
+    {
+      "id": "m_b_small",
+      "kind": "assume",
+      "domain": "sys",
+      "reads": [
+        "b"
+      ],
+      "expr": "b[7:3] == 5'd0"
+    },
+    {
+      "id": "c_y_zero",
+      "kind": "cover",
+      "domain": "sys",
+      "reads": [
+        "y"
+      ],
+      "expr": "y == 8'd0"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "module": "od_ctrl",
+  "role": "module",
+  "params": [],
+  "domains": [
+    {"name": "sys", "clock": "clk", "edge": "pos", "reset": {"port": "rst_n", "active": "low", "async": true}}
+  ],
+  "ports": [
+    {"name": "sda_i", "dir": "input", "type": "logic", "domain": "sys"},
+    {"name": "sda_oe", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b0"},
+    {"name": "shift", "dir": "output", "type": "logic [7:0]", "domain": "sys", "kind": "reg", "reset": "8'd0"}
+  ],
+  "blocks": [
+    {"id": "k_main", "kind": "seq", "domain": "sys", "reads": ["shift", "sda_i"], "writes": ["shift", "sda_oe"],
+     "body": "shift <= {shift[6:0], sda_i};\nsda_oe <= shift[3] ^ shift[0];"}
+  ]
+}

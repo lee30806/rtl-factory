@@ -1,0 +1,96 @@
+{
+  "agents": [
+    {
+      "_note": "Claude Code 런타임(기본). claude 2.1.294에서 확인: --bare는 hook, 플러그인, CLAUDE.md 자동 탐색, 키체인을 건너뛰어 입력을 격리함. 로컬 모델은 Anthropic Messages API 호환 엔드포인트(ollama 0.35 이상은 /v1/messages 지원)를 ANTHROPIC_BASE_URL로 지정. 모르는 모델은 컨텍스트를 200K로 가정하므로 CLAUDE_CODE_MAX_CONTEXT_TOKENS를 서버 컨텍스트에 맞춤. CLAUDE_CONFIG_DIR로 사용자 설정과 분리",
+      "name": "claude-family-a",
+      "family": "FAMILY_A",
+      "runtime": "claude-code",
+      "command": [
+        "claude",
+        "--bare",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Read",
+        "Write",
+        "Edit",
+        "Bash(python3 tools/validate_ir.py:*)",
+        "--no-session-persistence"
+      ],
+      "model": "MODEL_ID_A",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "{config_dir}/claude-config",
+        "ANTHROPIC_BASE_URL": "http://llm-gw.internal:8000",
+        "ANTHROPIC_API_KEY": "local",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "32768",
+        "DISABLE_AUTOUPDATER": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+      },
+      "vision": false
+    },
+    {
+      "_note": "Pi 런타임. 로컬 모델은 PI_CODING_AGENT_DIR의 models.json에 provider로 등록. pi 1.0.2에서 확인한 옵션: -p(비대화형), --no-session, --offline, --no-context-files(상위 AGENTS.md·CLAUDE.md 무시, 입력 격리에 필요), --no-extensions, --no-skills, --no-prompt-templates. 작은 모델은 {prompt} 대신 {task}로 과제 본문을 직접 넘기는 쪽이 나을 수 있음",
+      "name": "pi-family-a",
+      "family": "FAMILY_A",
+      "runtime": "pi",
+      "command": [
+        "pi",
+        "-p",
+        "--no-session",
+        "--offline",
+        "--no-context-files",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--model",
+        "{model}",
+        "{prompt}"
+      ],
+      "model": "MODEL_ID_A",
+      "env": {
+        "PI_CODING_AGENT_DIR": "/opt/agents/pi-family-a"
+      },
+      "vision": false
+    },
+    {
+      "_note": "Codex 런타임. 로컬 모델 provider는 ~/.codex/config.toml에 등록. 플래그는 codex exec --help로 확인",
+      "name": "codex-family-b",
+      "family": "FAMILY_B",
+      "runtime": "codex",
+      "command": [
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "-C",
+        "{workdir}",
+        "-m",
+        "{model}",
+        "{prompt}"
+      ],
+      "model": "MODEL_ID_B",
+      "vision": false
+    },
+    {
+      "_note": "Antigravity CLI(agy) 런타임. agy 1.3.1에서 확인한 headless 옵션: -p(비대화형), --dangerously-skip-permissions(도구 승인 자동, 격리된 작업 디렉터리에서만 사용), --print-timeout. 모델 목록을 Google 서비스에서 받아 오며 로컬 모델 연결 설정은 확인되지 않음. 폐쇄망 사용 가능 여부는 X3에서 확인. OpenRig Seat 런타임은 지원하지 않으므로 파이프라인 headless 용도로만 씀",
+      "name": "agy-family-d",
+      "family": "FAMILY_D",
+      "runtime": "antigravity",
+      "command": [
+        "agy",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        "1500s"
+      ],
+      "model": "MODEL_ID_D",
+      "vision": false
+    }
+  ]
+}

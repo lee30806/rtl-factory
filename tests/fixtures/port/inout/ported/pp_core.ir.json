@@ -1,0 +1,18 @@
+{
+  "module": "pp_core",
+  "role": "module",
+  "params": [],
+  "domains": [
+    {"name": "sys", "clock": "clk", "edge": "pos", "reset": {"port": "rst_n", "active": "low", "async": true}}
+  ],
+  "ports": [
+    {"name": "pad_o", "dir": "output", "type": "logic [3:0]", "domain": "sys", "kind": "reg", "reset": "4'd0"},
+    {"name": "pad_oe", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b0"},
+    {"name": "pad_i", "dir": "input", "type": "logic [3:0]", "domain": "sys"},
+    {"name": "q", "dir": "output", "type": "logic [3:0]", "domain": "sys", "kind": "reg", "reset": "4'd0"}
+  ],
+  "blocks": [
+    {"id": "k_main", "kind": "seq", "domain": "sys", "reads": ["pad_i", "pad_oe", "pad_o"], "writes": ["q", "pad_oe", "pad_o"],
+     "body": "q <= pad_i;\npad_oe <= ~pad_oe;\npad_o <= pad_o + 4'd1;"}
+  ]
+}

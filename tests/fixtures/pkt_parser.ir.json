@@ -1,0 +1,45 @@
+{
+  "module": "pkt_parser",
+  "role": "module",
+
+  "params":  [{ "name": "SYNC_BYTE", "type": "logic [7:0]", "default": "8'hA5" }],
+  "domains": [{ "name": "sys", "clock": "clk", "edge": "pos",
+                "reset": { "port": "rst_n", "active": "low", "async": true } }],
+  "ports": [
+    { "bundle": "s", "protocol": "valid_ready", "role": "sink", "domain": "sys",
+      "signals": [
+        { "name": "s_valid", "dir": "input",  "type": "logic" },
+        { "name": "s_ready", "dir": "output", "type": "logic", "kind": "wire" },
+        { "name": "s_data",  "dir": "input",  "type": "logic [7:0]" }
+      ] },
+    { "name": "pkt_valid", "dir": "output", "type": "logic",
+      "domain": "sys", "kind": "reg", "reset": "1'b0" }
+  ],
+
+  "types":   [{ "name": "state_e", "kind": "enum",
+                "members": ["IDLE", "HEADER", "PAYLOAD"] }],
+  "signals": [
+    { "name": "byte_cnt", "kind": "reg",  "type": "logic [7:0]", "domain": "sys", "reset": "'0" },
+    { "name": "sync_hit", "kind": "wire", "type": "logic" }
+  ],
+
+  "blocks": [
+    { "id": "k_hit", "kind": "comb",
+      "reads": ["s_valid", "s_data"], "writes": ["sync_hit", "s_ready"],
+      "body": "s_ready = 1'b1; sync_hit = s_valid && (s_data == SYNC_BYTE);" },
+
+    { "id": "k_fsm", "kind": "fsm", "domain": "sys",
+      "state_type": "state_e", "state_name": "state", "reset_state": "IDLE",
+      "reads": ["sync_hit", "s_valid", "byte_cnt"],
+      "transitions": [
+        { "id": "tr1", "from": "IDLE",    "to": "HEADER",  "cond": "sync_hit" },
+        { "id": "tr2", "from": "HEADER",  "to": "PAYLOAD", "cond": "s_valid" },
+        { "id": "tr3", "from": "PAYLOAD", "to": "IDLE",    "cond": "s_valid && byte_cnt == 8'd1" }
+      ] },
+
+    { "id": "k_cnt", "kind": "seq", "domain": "sys",
+      "reads": ["state_q", "s_valid", "s_data", "byte_cnt"],
+      "writes": ["byte_cnt", "pkt_valid"],
+      "body": "pkt_valid <= 1'b0; if (state_q == HEADER && s_valid) byte_cnt <= s_data; else if (state_q == PAYLOAD && s_valid) begin byte_cnt <= byte_cnt - 8'd1; pkt_valid <= (byte_cnt == 8'd1); end" }
+  ]
+}

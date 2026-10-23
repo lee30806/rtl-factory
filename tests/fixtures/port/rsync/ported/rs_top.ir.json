@@ -1,0 +1,54 @@
+{
+  "module": "rs_top",
+  "role": "block_top",
+  "params": [],
+  "domains": [
+    {
+      "name": "sys",
+      "clock": "clk",
+      "edge": "pos",
+      "reset": {
+        "port": "arst_n",
+        "active": "low",
+        "async": true,
+        "synchronize": true
+      }
+    }
+  ],
+  "ports": [
+    {
+      "name": "d",
+      "dir": "input",
+      "type": "logic [7:0]",
+      "domain": "sys"
+    },
+    {
+      "name": "q",
+      "dir": "output",
+      "type": "logic [7:0]",
+      "domain": "sys",
+      "kind": "wire"
+    }
+  ],
+  "instances": [
+    {
+      "name": "u_core",
+      "module": "rs_core",
+      "domain_map": {
+        "sys": "sys"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "c_u_core_d",
+      "from": "self.d",
+      "to": "u_core.d"
+    },
+    {
+      "id": "c_u_core_q",
+      "from": "u_core.q",
+      "to": "self.q"
+    }
+  ]
+}

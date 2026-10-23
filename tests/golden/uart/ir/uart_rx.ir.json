@@ -1,0 +1,32 @@
+{
+  "module": "uart_rx",
+  "role": "module",
+  "params": [{ "name": "DATA_WIDTH", "type": "int", "default": "8" }],
+  "domains": [{ "name": "sys", "clock": "clk", "edge": "pos",
+                "reset": { "port": "rst", "active": "high", "async": false } }],
+  "ports": [
+    { "bundle": "m_axis", "protocol": "valid_ready", "role": "source", "domain": "sys",
+      "signals": [
+        { "name": "m_axis_tdata",  "dir": "output", "type": "logic [DATA_WIDTH-1:0]", "kind": "reg", "reset": "'0" },
+        { "name": "m_axis_tvalid", "dir": "output", "type": "logic", "kind": "reg", "reset": "1'b0" },
+        { "name": "m_axis_tready", "dir": "input",  "type": "logic" }
+      ] },
+    { "name": "rxd", "dir": "input", "type": "logic", "domain": "sys" },
+    { "name": "busy", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b0" },
+    { "name": "overrun_error", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b0" },
+    { "name": "frame_error", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b0" },
+    { "name": "prescale", "dir": "input", "type": "logic [15:0]", "domain": "sys" }
+  ],
+  "signals": [
+    { "name": "rxd_reg",      "kind": "reg", "type": "logic",                  "domain": "sys", "reset": "1'b1" },
+    { "name": "data_reg",     "kind": "reg", "type": "logic [DATA_WIDTH-1:0]", "domain": "sys", "reset": "'0" },
+    { "name": "prescale_reg", "kind": "reg", "type": "logic [18:0]",           "domain": "sys", "reset": "'0" },
+    { "name": "bit_cnt",      "kind": "reg", "type": "logic [3:0]",            "domain": "sys", "reset": "'0" }
+  ],
+  "blocks": [
+    { "id": "k_rx", "kind": "seq", "domain": "sys",
+      "reads": ["rxd", "m_axis_tvalid", "m_axis_tready", "prescale_reg", "bit_cnt", "rxd_reg", "prescale", "data_reg"],
+      "writes": ["rxd_reg", "overrun_error", "frame_error", "m_axis_tvalid", "prescale_reg", "bit_cnt", "data_reg", "m_axis_tdata", "busy"],
+      "body": "rxd_reg <= rxd;\noverrun_error <= 1'b0;\nframe_error <= 1'b0;\nif (m_axis_tvalid && m_axis_tready) begin\n  m_axis_tvalid <= 1'b0;\nend\nif (prescale_reg > 0) begin\n  prescale_reg <= prescale_reg - 19'd1;\nend else if (bit_cnt > 0) begin\n  if (bit_cnt > 4'(DATA_WIDTH + 1)) begin\n    if (!rxd_reg) begin\n      bit_cnt <= bit_cnt - 4'd1;\n      prescale_reg <= {prescale, 3'b000} - 19'd1;\n    end else begin\n      bit_cnt <= 4'd0;\n      prescale_reg <= 19'd0;\n    end\n  end else if (bit_cnt > 1) begin\n    bit_cnt <= bit_cnt - 4'd1;\n    prescale_reg <= {prescale, 3'b000} - 19'd1;\n    data_reg <= {rxd_reg, data_reg[DATA_WIDTH-1:1]};\n  end else if (bit_cnt == 1) begin\n    bit_cnt <= bit_cnt - 4'd1;\n    if (rxd_reg) begin\n      m_axis_tdata <= data_reg;\n      m_axis_tvalid <= 1'b1;\n      overrun_error <= m_axis_tvalid;\n    end else begin\n      frame_error <= 1'b1;\n    end\n  end\nend else begin\n  busy <= 1'b0;\n  if (!rxd_reg) begin\n    prescale_reg <= {1'b0, prescale, 2'b00} - 19'd2;\n    bit_cnt <= 4'(DATA_WIDTH + 2);\n    data_reg <= '0;\n    busy <= 1'b1;\n  end\nend" }
+  ]
+}

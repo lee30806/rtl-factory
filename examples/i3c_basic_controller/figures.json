@@ -1,0 +1,6 @@
+[
+  {"figure": 16, "tag": "규범", "reqs": ["TR-07", "TR-09"],
+   "description": "STOP 뒤 Bus Free, Bus Available, Bus Idle 판정 기간. 기간 값은 TR-07, TR-09의 레지스터 기본값이 요구이고, 그림의 SDA/SCL 모양은 한 가지 예다."},
+  {"figure": 14, "tag": "예시", "scenario": "SC-04",
+   "description": "IBI 주소 ACK 뒤 Mandatory Byte로 넘어갈 때 Open Drain에서 Push-Pull로 바뀌는 한 가지 예. 사이클 수는 요구가 아니다."}
+]

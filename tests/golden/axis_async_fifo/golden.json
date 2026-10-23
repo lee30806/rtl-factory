@@ -1,0 +1,57 @@
+{
+  "ir": [
+    "ir/axis_async_fifo.ir.json"
+  ],
+  "cells": [
+    "../../../pipeline/emitter/stubs/sync_2ff.sv"
+  ],
+  "runs": [
+    {
+      "top": "axis_async_fifo",
+      "tb": "test_axis_async_fifo",
+      "env": {
+        "S_CLK": "10",
+        "M_CLK": "11"
+      }
+    }
+  ],
+  "upstream_rtl": [
+    "upstream/rtl/axis_async_fifo.v"
+  ],
+  "upstream_params": {
+    "axis_async_fifo": {
+      "DEPTH": 1024,
+      "DATA_WIDTH": 8,
+      "KEEP_ENABLE": 0,
+      "KEEP_WIDTH": 1,
+      "LAST_ENABLE": 1,
+      "ID_ENABLE": 1,
+      "ID_WIDTH": 8,
+      "DEST_ENABLE": 1,
+      "DEST_WIDTH": 8,
+      "USER_ENABLE": 1,
+      "USER_WIDTH": 1,
+      "RAM_PIPELINE": 1,
+      "OUTPUT_FIFO_ENABLE": 0,
+      "FRAME_FIFO": 0,
+      "USER_BAD_FRAME_VALUE": 1,
+      "USER_BAD_FRAME_MASK": 1,
+      "DROP_OVERSIZE_FRAME": 0,
+      "DROP_BAD_FRAME": 0,
+      "DROP_WHEN_FULL": 0,
+      "MARK_WHEN_FULL": 0,
+      "PAUSE_ENABLE": 1,
+      "FRAME_PAUSE": 1
+    }
+  },
+  "harness": {
+    "top": "axis_async_fifo",
+    "tb": "tb_axis_async_fifo_h",
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "spec": "spec.md"
+  }
+}

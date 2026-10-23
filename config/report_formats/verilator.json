@@ -1,0 +1,11 @@
+{
+ "tool": "verilator",
+ "description": "Verilator --lint-only 출력. 예: %Warning-UNUSEDSIGNAL: rtl/a.sv:12:5: Signal is not used: 'x'",
+ "patterns": [
+  {"regex": "^%(?P<severity>Warning|Error)-(?P<rule>[A-Z0-9_]+): (?:(?P<file>\\S+?):(?P<line>\\d+):(?:\\d+:)?\\s*)?(?P<message>.*)$"},
+  {"regex": "^%(?P<severity>Error): (?:(?P<file>\\S+?):(?P<line>\\d+):(?:\\d+:)?\\s*)?(?P<message>.*)$", "defaults": {"rule": "ERROR"}},
+  {"regex": "^%(?P<severity>Warning): (?:(?P<file>\\S+?):(?P<line>\\d+):(?:\\d+:)?\\s*)?(?P<message>.*)$", "defaults": {"rule": "WARNING"}}
+ ],
+ "ignore": ["^%Error: Exiting due to"],
+ "severity_map": {"Warning": "warning", "Error": "error"}
+}

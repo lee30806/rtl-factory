@@ -1,0 +1,73 @@
+{
+ "module": "acc",
+ "role": "module",
+ "params": [
+  {
+   "name": "INIT",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "DW",
+   "type": "int",
+   "default": "8",
+   "local": true
+  },
+  {
+   "name": "STEP",
+   "type": "int",
+   "default": "1",
+   "local": true
+  }
+ ],
+ "domains": [
+  {
+   "name": "sys",
+   "clock": "clk",
+   "edge": "pos",
+   "reset": {
+    "port": "rst",
+    "active": "high",
+    "async": false
+   }
+  }
+ ],
+ "ports": [
+  {
+   "name": "logic_",
+   "dir": "input",
+   "type": "logic [DW-1:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "en",
+   "dir": "input",
+   "type": "logic",
+   "domain": "sys"
+  },
+  {
+   "name": "sum",
+   "dir": "output",
+   "type": "logic [DW-1:0]",
+   "domain": "sys",
+   "kind": "reg",
+   "reset": "DW'(INIT)"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_acc",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "en",
+    "sum",
+    "logic_"
+   ],
+   "writes": [
+    "sum"
+   ],
+   "body": "if (en) begin\n  sum <= sum + logic_ + DW'(STEP);\nend"
+  }
+ ]
+}

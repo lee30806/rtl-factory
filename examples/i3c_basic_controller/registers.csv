@@ -1,0 +1,42 @@
+register,offset,field,bits,access,reset,description
+CTRL,0x000,enable,0,RW,0,1이면 Controller 동작. 0이면 버스를 놓고 새 명령을 시작하지 않음
+CTRL,0x000,hj_ack,1,RW,0,1이면 Hot-Join 요청을 ACK
+CTRL,0x000,hk_en,2,RW,1,1이면 High-Keeper 제어 출력(sda_hk_en; scl_hk_en)을 켬
+STATUS,0x004,busy,0,RO,0,명령 실행 중이거나 버스 요청을 처리 중이면 1
+STATUS,0x004,bus_free,1,RO,0,버스가 Bus Free 상태이면 1
+INT_STATUS,0x008,resp_avail,0,RO,0,resp 큐가 비어 있지 않으면 1 (레벨)
+INT_STATUS,0x008,ibi_avail,1,RO,0,ibi 큐가 비어 있지 않으면 1 (레벨)
+INT_STATUS,0x008,ibi_ovf,2,W1C,0,IBI FIFO가 가득 차 IBI를 NACK함
+INT_STATUS,0x008,sda_stuck,3,W1C,0,START 전에 SDA가 STUCK.cycles 이상 Low
+INT_STATUS,0x008,scl_stuck,4,W1C,0,SCL을 High로 구동하는데 scl_i가 STUCK.cycles 이상 Low
+INT_EN,0x00C,resp_avail,0,RW,0,INT_STATUS.resp_avail 인터럽트 허용
+INT_EN,0x00C,ibi_avail,1,RW,0,INT_STATUS.ibi_avail 인터럽트 허용
+INT_EN,0x00C,ibi_ovf,2,RW,0,INT_STATUS.ibi_ovf 인터럽트 허용
+INT_EN,0x00C,sda_stuck,3,RW,0,INT_STATUS.sda_stuck 인터럽트 허용
+INT_EN,0x00C,scl_stuck,4,RW,0,INT_STATUS.scl_stuck 인터럽트 허용
+OWN_DA,0x010,da,6:0,RW,0x00,Controller 자신의 동적 주소
+RETRY,0x014,count,1:0,RW,2,CE0; CE1; CE2 오류의 자동 재시도 횟수
+PP_TIMING,0x018,low,7:0,RW,4,Push-Pull SCL Low 사이클 수 (3 미만은 3)
+PP_TIMING,0x018,high,15:8,RW,4,Push-Pull SCL High 사이클 수 (3 미만은 3)
+OD_TIMING,0x01C,low,7:0,RW,20,Open Drain SCL Low 사이클 수
+OD_TIMING,0x01C,high,15:8,RW,4,Open Drain SCL High 사이클 수
+OD_TIMING,0x01C,high_init,23:16,RW,20,enable 뒤 첫 Broadcast Address 헤더의 SCL High 사이클 수
+I2C_FM,0x020,low,15:0,RW,130,Legacy I2C Fast Mode SCL Low 사이클 수
+I2C_FM,0x020,high,31:16,RW,120,Legacy I2C Fast Mode SCL High 사이클 수
+I2C_FMP,0x024,low,15:0,RW,50,Legacy I2C Fast Mode Plus SCL Low 사이클 수
+I2C_FMP,0x024,high,31:16,RW,50,Legacy I2C Fast Mode Plus SCL High 사이클 수
+BUS_COND,0x028,free,7:0,RW,50,STOP 뒤 다음 START까지 최소 사이클 수 (Bus Free)
+BUS_COND,0x028,aval,15:8,RW,100,Bus Available 판정 사이클 수
+BUS_IDLE,0x02C,idle,19:0,RW,20000,Bus Idle 판정 사이클 수
+SAMPLE,0x030,dly,3:0,RW,3,SCL 상승을 낸 뒤 Target 구동 비트를 판정하는 사이클
+STUCK,0x034,cycles,23:0,RW,100000,SDA 또는 SCL이 이 사이클 수 이상 Low이면 sda_stuck 또는 scl_stuck
+CMD_GAP,0x038,cycles,15:0,RW,100,term_sr=1 명령 뒤 다음 명령을 기다리는 최대 사이클 수
+DAT[i],0x100+0x10*i,dyn_addr,6:0,RW,0x00,Target의 동적 주소 (i=0..DAT_DEPTH-1)
+DAT[i],0x100+0x10*i,static_addr,14:8,RW,0x00,Target의 정적 주소 (SETDASA와 Legacy I2C용 기록)
+DAT[i],0x100+0x10*i,ibi_en,16,RW,0,1이면 이 Target의 IBI를 ACK
+DAT[i],0x100+0x10*i,ibi_payload,17,RW,0,1이면 IBI 뒤 페이로드(MDB 포함)를 읽음 (BCR[2]와 같게 설정)
+DAT[i],0x100+0x10*i,assigned,18,RW,0,동적 주소가 할당된 항목. ENTDAA 성공 시 1로 바뀜
+DCT[i],0x200+0x10*i,pid_lo,31:0,RO,0,Provisioned ID [31:0] (ENTDAA가 기록)
+DCT[i],0x204+0x10*i,pid_hi,15:0,RO,0,Provisioned ID [47:32]
+DCT[i],0x208+0x10*i,bcr,7:0,RO,0,Bus Characteristics Register
+DCT[i],0x208+0x10*i,dcr,15:8,RO,0,Device Characteristics Register

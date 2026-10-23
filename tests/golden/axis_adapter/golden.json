@@ -1,0 +1,40 @@
+{
+  "ir": [
+    "ir/axis_adapter.ir.json"
+  ],
+  "runs": [
+    {
+      "top": "axis_adapter",
+      "tb": "test_axis_adapter"
+    }
+  ],
+  "upstream_rtl": [
+    "upstream/rtl/axis_adapter.v"
+  ],
+  "upstream_params": {
+    "axis_adapter": {
+      "S_DATA_WIDTH": 32,
+      "S_KEEP_ENABLE": 1,
+      "S_KEEP_WIDTH": 4,
+      "M_DATA_WIDTH": 8,
+      "M_KEEP_ENABLE": 0,
+      "M_KEEP_WIDTH": 1,
+      "ID_ENABLE": 1,
+      "ID_WIDTH": 8,
+      "DEST_ENABLE": 1,
+      "DEST_WIDTH": 8,
+      "USER_ENABLE": 1,
+      "USER_WIDTH": 1
+    }
+  },
+  "harness": {
+    "top": "axis_adapter",
+    "tb": "tb_axis_adapter_h",
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "spec": "spec.md"
+  }
+}

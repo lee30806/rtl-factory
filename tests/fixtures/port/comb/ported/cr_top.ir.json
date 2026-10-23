@@ -1,0 +1,92 @@
+{
+ "module": "cr_top",
+ "role": "module",
+ "params": [],
+ "domains": [
+  {
+   "name": "sys",
+   "clock": "clk",
+   "edge": "pos",
+   "reset": {
+    "port": "rst",
+    "active": "high",
+    "async": false
+   }
+  }
+ ],
+ "ports": [
+  {
+   "name": "sel",
+   "dir": "input",
+   "type": "logic [1:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "en",
+   "dir": "input",
+   "type": "logic",
+   "domain": "sys"
+  },
+  {
+   "name": "q",
+   "dir": "output",
+   "type": "logic [3:0]",
+   "domain": "sys",
+   "kind": "wire"
+  },
+  {
+   "name": "cnt",
+   "dir": "output",
+   "type": "logic [3:0]",
+   "domain": "sys",
+   "kind": "reg",
+   "reset": "4'd0"
+  }
+ ],
+ "instances": [
+  {
+   "name": "u_dec",
+   "module": "dec",
+   "domain_map": {}
+  },
+  {
+   "name": "u_pipe",
+   "module": "pipe",
+   "domain_map": {
+    "sys": "sys"
+   }
+  }
+ ],
+ "connections": [
+  {
+   "id": "c_u_dec_sel",
+   "from": "self.sel",
+   "to": "u_dec.sel"
+  },
+  {
+   "id": "c_u_dec_onehot_u_pipe",
+   "from": "u_dec.onehot",
+   "to": "u_pipe.d"
+  },
+  {
+   "id": "c_u_pipe_q",
+   "from": "u_pipe.q",
+   "to": "self.q"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_cnt",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "en",
+    "cnt"
+   ],
+   "writes": [
+    "cnt"
+   ],
+   "body": "if (en) cnt <= cnt + 4'd1;"
+  }
+ ]
+}

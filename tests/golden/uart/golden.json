@@ -1,0 +1,33 @@
+{
+  "ir": [
+    "ir/uart_rx.ir.json",
+    "ir/uart_tx.ir.json",
+    "ir/uart.ir.json"
+  ],
+  "runs": [
+    {
+      "top": "uart_rx",
+      "tb": "test_uart_rx"
+    },
+    {
+      "top": "uart_tx",
+      "tb": "test_uart_tx"
+    }
+  ],
+  "upstream_rtl": [
+    "upstream/rtl/uart_rx.v",
+    "upstream/rtl/uart_tx.v",
+    "upstream/rtl/uart.v"
+  ],
+  "upstream_params": {
+    "uart_rx": {
+      "DATA_WIDTH": 8
+    },
+    "uart_tx": {
+      "DATA_WIDTH": 8
+    }
+  },
+  "lint": [
+    "uart"
+  ]
+}

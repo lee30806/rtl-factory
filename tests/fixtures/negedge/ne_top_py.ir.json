@@ -1,0 +1,153 @@
+{
+ "module": "ne_top",
+ "role": "module",
+ "lang": "py",
+ "params": [],
+ "domains": [
+  {
+   "name": "clk",
+   "clock": "clk",
+   "edge": "pos",
+   "reset": {
+    "port": "rst_n",
+    "active": "low",
+    "async": true
+   }
+  },
+  {
+   "name": "clk_neg",
+   "clock": "clk",
+   "edge": "neg",
+   "reset": {
+    "port": "rst_n",
+    "active": "low",
+    "async": true
+   },
+   "sync_to": {
+    "domain": "clk",
+    "div": 1
+   }
+  }
+ ],
+ "ports": [
+  {
+   "bundle": "s",
+   "protocol": "valid_ready",
+   "role": "sink",
+   "domain": "clk",
+   "signals": [
+    {
+     "name": "s_valid",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "s_ready",
+     "dir": "output",
+     "type": "logic",
+     "kind": "wire"
+    },
+    {
+     "name": "s_data",
+     "dir": "input",
+     "type": "logic [7:0]"
+    }
+   ]
+  },
+  {
+   "name": "m_valid",
+   "dir": "output",
+   "type": "logic",
+   "domain": "clk",
+   "kind": "reg",
+   "reset": "1'b0"
+  },
+  {
+   "name": "m_ready",
+   "dir": "input",
+   "type": "logic",
+   "domain": "clk"
+  },
+  {
+   "name": "m_data",
+   "dir": "output",
+   "type": "logic [7:0]",
+   "domain": "clk_neg",
+   "kind": "wire"
+  },
+  {
+   "name": "n_in",
+   "dir": "input",
+   "type": "logic [3:0]",
+   "domain": "clk_neg"
+  },
+  {
+   "name": "n_cnt",
+   "dir": "output",
+   "type": "logic [7:0]",
+   "domain": "clk_neg",
+   "kind": "reg",
+   "reset": "8'd0"
+  },
+  {
+   "name": "p_q",
+   "dir": "output",
+   "type": "logic [7:0]",
+   "domain": "clk",
+   "kind": "reg",
+   "reset": "8'd0"
+  }
+ ],
+ "signals": [
+  {
+   "name": "hold",
+   "kind": "reg",
+   "type": "logic [7:0]",
+   "domain": "clk",
+   "reset": "8'd0"
+  },
+  {
+   "name": "conv",
+   "kind": "reg",
+   "type": "logic [7:0]",
+   "domain": "clk_neg",
+   "reset": "8'd0"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "c_ready",
+   "kind": "comb",
+   "body": "s_ready = (not m_valid) or m_ready"
+  },
+  {
+   "id": "k_hold",
+   "kind": "seq",
+   "domain": "clk",
+   "body": "if s_ready:\n    m_valid = s_valid\n    hold = s_data"
+  },
+  {
+   "id": "k_conv",
+   "kind": "seq",
+   "domain": "clk_neg",
+   "body": "conv = hold ^ 0x5A"
+  },
+  {
+   "id": "c_mdata",
+   "kind": "comb",
+   "body": "m_data = conv"
+  },
+  {
+   "id": "k_cnt",
+   "kind": "seq",
+   "domain": "clk_neg",
+   "body": "n_cnt = n_cnt + n_in"
+  },
+  {
+   "id": "k_pq",
+   "kind": "seq",
+   "domain": "clk",
+   "body": "p_q = conv"
+  }
+ ]
+}

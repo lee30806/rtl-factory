@@ -1,0 +1,21 @@
+{
+ "module": "add8",
+ "role": "block_top",
+ "params": [],
+ "domains": [],
+ "ports": [
+  {"name": "a", "dir": "input", "type": "logic [7:0]", "domain": null},
+  {"name": "b", "dir": "input", "type": "logic [7:0]", "domain": null},
+  {"name": "cin", "dir": "input", "type": "logic", "domain": null},
+  {"name": "sum", "dir": "output", "type": "logic [7:0]", "domain": null},
+  {"name": "cout", "dir": "output", "type": "logic", "domain": null}
+ ],
+ "instances": [{"name": "u_core", "module": "add8_core", "params": {}, "domain_map": {}}],
+ "connections": [
+  {"id": "c_a", "from": "self.a", "to": "u_core.a"},
+  {"id": "c_b", "from": "self.b", "to": "u_core.b"},
+  {"id": "c_cin", "from": "self.cin", "to": "u_core.cin"},
+  {"id": "c_sum", "from": "u_core.sum", "to": "self.sum"},
+  {"id": "c_cout", "from": "u_core.cout", "to": "self.cout"}
+ ]
+}

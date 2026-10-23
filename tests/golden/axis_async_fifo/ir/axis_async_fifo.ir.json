@@ -1,0 +1,985 @@
+{
+ "module": "axis_async_fifo",
+ "role": "module",
+ "params": [
+  {
+   "name": "DEPTH",
+   "type": "int",
+   "default": "1024"
+  },
+  {
+   "name": "DATA_WIDTH",
+   "type": "int",
+   "default": "8"
+  },
+  {
+   "name": "KEEP_ENABLE",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "KEEP_WIDTH",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "LAST_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "ID_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "ID_WIDTH",
+   "type": "int",
+   "default": "8"
+  },
+  {
+   "name": "DEST_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "DEST_WIDTH",
+   "type": "int",
+   "default": "8"
+  },
+  {
+   "name": "USER_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "USER_WIDTH",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "RAM_PIPELINE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "OUTPUT_FIFO_ENABLE",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "FRAME_FIFO",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "USER_BAD_FRAME_VALUE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "USER_BAD_FRAME_MASK",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "DROP_OVERSIZE_FRAME",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "DROP_BAD_FRAME",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "DROP_WHEN_FULL",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "MARK_WHEN_FULL",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "PAUSE_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "FRAME_PAUSE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "ADDR_WIDTH",
+   "type": "int",
+   "default": "10",
+   "local": true
+  },
+  {
+   "name": "WIDTH",
+   "type": "int",
+   "default": "26",
+   "local": true
+  },
+  {
+   "name": "ID_OFFSET",
+   "type": "int",
+   "default": "9",
+   "local": true
+  },
+  {
+   "name": "DEST_OFFSET",
+   "type": "int",
+   "default": "17",
+   "local": true
+  },
+  {
+   "name": "USER_OFFSET",
+   "type": "int",
+   "default": "25",
+   "local": true
+  },
+  {
+   "name": "LAST_OFFSET",
+   "type": "int",
+   "default": "8",
+   "local": true
+  }
+ ],
+ "domains": [
+  {
+   "name": "s",
+   "clock": "s_clk",
+   "edge": "pos",
+   "freq_mhz": 100,
+   "reset": {
+    "port": "s_rst",
+    "active": "high",
+    "async": false
+   },
+   "async_to": [
+    "m"
+   ]
+  },
+  {
+   "name": "m",
+   "clock": "m_clk",
+   "edge": "pos",
+   "freq_mhz": 90.9,
+   "reset": {
+    "port": "m_rst",
+    "active": "high",
+    "async": false
+   },
+   "async_to": [
+    "s"
+   ]
+  }
+ ],
+ "ports": [
+  {
+   "bundle": "s_axis",
+   "protocol": "valid_ready",
+   "role": "sink",
+   "domain": "s",
+   "signals": [
+    {
+     "name": "s_axis_tdata",
+     "dir": "input",
+     "type": "logic [DATA_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tkeep",
+     "dir": "input",
+     "type": "logic [KEEP_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tvalid",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "s_axis_tready",
+     "dir": "output",
+     "type": "logic",
+     "kind": "wire"
+    },
+    {
+     "name": "s_axis_tlast",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "s_axis_tid",
+     "dir": "input",
+     "type": "logic [ID_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tdest",
+     "dir": "input",
+     "type": "logic [DEST_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tuser",
+     "dir": "input",
+     "type": "logic [USER_WIDTH-1:0]"
+    }
+   ]
+  },
+  {
+   "bundle": "m_axis",
+   "protocol": "valid_ready",
+   "role": "source",
+   "domain": "m",
+   "signals": [
+    {
+     "name": "m_axis_tdata",
+     "dir": "output",
+     "type": "logic [DATA_WIDTH-1:0]",
+     "kind": "wire"
+    },
+    {
+     "name": "m_axis_tkeep",
+     "dir": "output",
+     "type": "logic [KEEP_WIDTH-1:0]",
+     "kind": "wire"
+    },
+    {
+     "name": "m_axis_tvalid",
+     "dir": "output",
+     "type": "logic",
+     "kind": "wire"
+    },
+    {
+     "name": "m_axis_tready",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "m_axis_tlast",
+     "dir": "output",
+     "type": "logic",
+     "kind": "wire"
+    },
+    {
+     "name": "m_axis_tid",
+     "dir": "output",
+     "type": "logic [ID_WIDTH-1:0]",
+     "kind": "wire"
+    },
+    {
+     "name": "m_axis_tdest",
+     "dir": "output",
+     "type": "logic [DEST_WIDTH-1:0]",
+     "kind": "wire"
+    },
+    {
+     "name": "m_axis_tuser",
+     "dir": "output",
+     "type": "logic [USER_WIDTH-1:0]",
+     "kind": "wire"
+    }
+   ]
+  },
+  {
+   "name": "s_pause_req",
+   "dir": "input",
+   "type": "logic",
+   "domain": "s"
+  },
+  {
+   "name": "s_pause_ack",
+   "dir": "output",
+   "type": "logic",
+   "kind": "wire",
+   "domain": "s"
+  },
+  {
+   "name": "m_pause_req",
+   "dir": "input",
+   "type": "logic",
+   "domain": "m"
+  },
+  {
+   "name": "m_pause_ack",
+   "dir": "output",
+   "type": "logic",
+   "kind": "wire",
+   "domain": "m"
+  },
+  {
+   "name": "s_status_depth",
+   "dir": "output",
+   "type": "logic [ADDR_WIDTH:0]",
+   "kind": "reg",
+   "domain": "s"
+  },
+  {
+   "name": "s_status_depth_commit",
+   "dir": "output",
+   "type": "logic [ADDR_WIDTH:0]",
+   "kind": "reg",
+   "domain": "s"
+  },
+  {
+   "name": "s_status_overflow",
+   "dir": "output",
+   "type": "logic",
+   "kind": "reg",
+   "reset": "1'b0",
+   "domain": "s"
+  },
+  {
+   "name": "s_status_bad_frame",
+   "dir": "output",
+   "type": "logic",
+   "kind": "wire",
+   "domain": "s"
+  },
+  {
+   "name": "s_status_good_frame",
+   "dir": "output",
+   "type": "logic",
+   "kind": "wire",
+   "domain": "s"
+  },
+  {
+   "name": "m_status_depth",
+   "dir": "output",
+   "type": "logic [ADDR_WIDTH:0]",
+   "kind": "reg",
+   "domain": "m"
+  },
+  {
+   "name": "m_status_depth_commit",
+   "dir": "output",
+   "type": "logic [ADDR_WIDTH:0]",
+   "kind": "reg",
+   "domain": "m"
+  },
+  {
+   "name": "m_status_overflow",
+   "dir": "output",
+   "type": "logic",
+   "kind": "wire",
+   "domain": "m"
+  },
+  {
+   "name": "m_status_bad_frame",
+   "dir": "output",
+   "type": "logic",
+   "kind": "wire",
+   "domain": "m"
+  },
+  {
+   "name": "m_status_good_frame",
+   "dir": "output",
+   "type": "logic",
+   "kind": "wire",
+   "domain": "m"
+  }
+ ],
+ "signals": [
+  {
+   "name": "wr_ptr_reg",
+   "kind": "reg",
+   "type": "logic [ADDR_WIDTH:0]",
+   "domain": "s",
+   "reset": "'0"
+  },
+  {
+   "name": "wr_ptr_commit_reg",
+   "kind": "reg",
+   "type": "logic [ADDR_WIDTH:0]",
+   "domain": "s",
+   "reset": "'0"
+  },
+  {
+   "name": "wr_ptr_gray_reg",
+   "kind": "reg",
+   "type": "logic [ADDR_WIDTH:0]",
+   "domain": "s",
+   "reset": "'0"
+  },
+  {
+   "name": "s_frame_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "s",
+   "reset": "1'b0"
+  },
+  {
+   "name": "drop_frame_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "s",
+   "reset": "1'b0"
+  },
+  {
+   "name": "overflow_sync1_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "s",
+   "reset": "1'b0"
+  },
+  {
+   "name": "s_side_ready_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "s",
+   "reset": "1'b0"
+  },
+  {
+   "name": "rd_ptr_conv_reg",
+   "kind": "reg",
+   "type": "logic [ADDR_WIDTH:0]",
+   "domain": "s"
+  },
+  {
+   "name": "s_pause_req_sync1_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "s"
+  },
+  {
+   "name": "wr_ptr_inc",
+   "kind": "wire",
+   "type": "logic [ADDR_WIDTH:0]"
+  },
+  {
+   "name": "wr_ptr_inc_gray",
+   "kind": "wire",
+   "type": "logic [ADDR_WIDTH:0]"
+  },
+  {
+   "name": "full",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "s_axis_word",
+   "kind": "wire",
+   "type": "logic [WIDTH-1:0]"
+  },
+  {
+   "name": "rd_ptr_sync_bin",
+   "kind": "wire",
+   "type": "logic [ADDR_WIDTH:0]"
+  },
+  {
+   "name": "rd_ptr_gray_sync2_reg",
+   "kind": "wire",
+   "type": "logic [ADDR_WIDTH:0]"
+  },
+  {
+   "name": "s_rst_sync3_reg",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "s_pause_ack_sync3_reg",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "rd_ptr_reg",
+   "kind": "reg",
+   "type": "logic [ADDR_WIDTH:0]",
+   "domain": "m",
+   "reset": "'0"
+  },
+  {
+   "name": "rd_ptr_gray_reg",
+   "kind": "reg",
+   "type": "logic [ADDR_WIDTH:0]",
+   "domain": "m",
+   "reset": "'0"
+  },
+  {
+   "name": "m_axis_tvalid_pipe_reg",
+   "kind": "reg",
+   "type": "logic [1:0]",
+   "domain": "m",
+   "reset": "'0"
+  },
+  {
+   "name": "m_frame_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m",
+   "reset": "1'b0"
+  },
+  {
+   "name": "m_drop_frame_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m",
+   "reset": "1'b0"
+  },
+  {
+   "name": "m_terminate_frame_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m",
+   "reset": "1'b0"
+  },
+  {
+   "name": "m_axis_pipe_reg0",
+   "kind": "reg",
+   "type": "logic [WIDTH-1:0]",
+   "domain": "m"
+  },
+  {
+   "name": "m_axis_pipe_reg1",
+   "kind": "reg",
+   "type": "logic [WIDTH-1:0]",
+   "domain": "m"
+  },
+  {
+   "name": "m_side_ready_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m",
+   "reset": "1'b0"
+  },
+  {
+   "name": "overflow_sync4_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m",
+   "reset": "1'b0"
+  },
+  {
+   "name": "wr_ptr_conv_reg",
+   "kind": "reg",
+   "type": "logic [ADDR_WIDTH:0]",
+   "domain": "m"
+  },
+  {
+   "name": "s_pause_ack_sync1_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m"
+  },
+  {
+   "name": "pause_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m",
+   "reset": "1'b0"
+  },
+  {
+   "name": "pause_frame_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "m",
+   "reset": "1'b0"
+  },
+  {
+   "name": "rd_ptr_inc",
+   "kind": "wire",
+   "type": "logic [ADDR_WIDTH:0]"
+  },
+  {
+   "name": "empty",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tready_pipe",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tvalid_pipe",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tlast_pipe",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "wr_ptr_sync_bin",
+   "kind": "wire",
+   "type": "logic [ADDR_WIDTH:0]"
+  },
+  {
+   "name": "wr_ptr_gray_sync2_reg",
+   "kind": "wire",
+   "type": "logic [ADDR_WIDTH:0]"
+  },
+  {
+   "name": "m_rst_sync3_reg",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "overflow_sync3_reg",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "s_pause_req_sync3_reg",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_side_ready_sync",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "s_side_ready_sync",
+   "kind": "wire",
+   "type": "logic"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_mem",
+   "kind": "memory",
+   "name": "mem",
+   "word_type": "logic [WIDTH-1:0]",
+   "depth": "2**ADDR_WIDTH",
+   "impl": "inferred",
+   "ports": [
+    {
+     "name": "wr",
+     "kind": "write",
+     "domain": "s"
+    },
+    {
+     "name": "rd",
+     "kind": "read",
+     "domain": "m"
+    }
+   ]
+  },
+  {
+   "id": "k_s_comb",
+   "kind": "comb",
+   "reads": [
+    "wr_ptr_reg",
+    "wr_ptr_gray_reg",
+    "rd_ptr_gray_sync2_reg",
+    "s_rst_sync3_reg",
+    "s_axis_tuser",
+    "s_axis_tdest",
+    "s_axis_tid",
+    "s_axis_tlast",
+    "s_axis_tdata",
+    "s_pause_ack_sync3_reg",
+    "full",
+    "wr_ptr_inc",
+    "m_side_ready_sync"
+   ],
+   "writes": [
+    "wr_ptr_inc",
+    "wr_ptr_inc_gray",
+    "full",
+    "s_axis_tready",
+    "s_axis_word",
+    "s_status_bad_frame",
+    "s_status_good_frame",
+    "s_pause_ack",
+    "s_rst_sync3_reg"
+   ],
+   "body": "s_rst_sync3_reg = !m_side_ready_sync;\nwr_ptr_inc = wr_ptr_reg + 1'b1;\nwr_ptr_inc_gray = wr_ptr_inc ^ (wr_ptr_inc >> 1);\nfull = wr_ptr_gray_reg == (rd_ptr_gray_sync2_reg ^ {2'b11, {(ADDR_WIDTH-1){1'b0}}});\ns_axis_tready = !full && !s_rst_sync3_reg;\ns_axis_word = {s_axis_tuser, s_axis_tdest, s_axis_tid, s_axis_tlast, s_axis_tdata};\ns_status_bad_frame = 1'b0;\ns_status_good_frame = 1'b0;\ns_pause_ack = s_pause_ack_sync3_reg;"
+  },
+  {
+   "id": "k_s_g2b",
+   "kind": "comb",
+   "reads": [
+    "rd_ptr_gray_sync2_reg"
+   ],
+   "writes": [
+    "rd_ptr_sync_bin"
+   ],
+   "body": "rd_ptr_sync_bin = '0;\nfor (int i = 0; i <= ADDR_WIDTH; i++) begin\n  rd_ptr_sync_bin[i] = ^(rd_ptr_gray_sync2_reg >> i);\nend"
+  },
+  {
+   "id": "k_wr",
+   "kind": "seq",
+   "domain": "s",
+   "reads": [
+    "s_axis_tready",
+    "s_axis_tvalid",
+    "s_axis_tlast",
+    "s_rst_sync3_reg",
+    "s_frame_reg",
+    "drop_frame_reg",
+    "wr_ptr_inc",
+    "wr_ptr_inc_gray"
+   ],
+   "writes": [
+    "s_status_overflow",
+    "s_frame_reg",
+    "drop_frame_reg",
+    "wr_ptr_reg",
+    "wr_ptr_commit_reg",
+    "wr_ptr_gray_reg"
+   ],
+   "body": "s_status_overflow <= 1'b0;\nif (s_axis_tready && s_axis_tvalid) begin\n  s_frame_reg <= !s_axis_tlast;\nend\nif (s_rst_sync3_reg) begin\n  if (s_frame_reg && !(s_axis_tready && s_axis_tvalid && s_axis_tlast)) begin\n    drop_frame_reg <= 1'b1;\n  end\n  if (s_axis_tready && s_axis_tvalid && !s_axis_tlast) begin\n    drop_frame_reg <= 1'b1;\n  end\nend\nif (s_axis_tready && s_axis_tvalid) begin\n  if (drop_frame_reg) begin\n    if (s_axis_tlast) begin\n      drop_frame_reg <= 1'b0;\n      s_status_overflow <= 1'b1;\n    end\n  end else begin\n    wr_ptr_reg <= wr_ptr_inc;\n    wr_ptr_commit_reg <= wr_ptr_inc;\n    wr_ptr_gray_reg <= wr_ptr_inc_gray;\n  end\nend\nif (s_rst_sync3_reg) begin\n  wr_ptr_reg <= '0;\n  wr_ptr_commit_reg <= '0;\n  wr_ptr_gray_reg <= '0;\nend"
+  },
+  {
+   "id": "k_mem_wr",
+   "kind": "seq",
+   "domain": "s",
+   "reads": [
+    "s_axis_tready",
+    "s_axis_tvalid",
+    "drop_frame_reg",
+    "wr_ptr_reg",
+    "s_axis_word"
+   ],
+   "writes": [
+    "mem"
+   ],
+   "body": "if (s_axis_tready && s_axis_tvalid && !drop_frame_reg) begin\n  mem[wr_ptr_reg[ADDR_WIDTH-1:0]] <= s_axis_word;\nend"
+  },
+  {
+   "id": "k_s_misc",
+   "kind": "seq",
+   "domain": "s",
+   "reads": [
+    "overflow_sync1_reg",
+    "s_status_overflow"
+   ],
+   "writes": [
+    "overflow_sync1_reg",
+    "s_side_ready_reg"
+   ],
+   "body": "overflow_sync1_reg <= overflow_sync1_reg ^ s_status_overflow;\ns_side_ready_reg <= 1'b1;"
+  },
+  {
+   "id": "k_s_status",
+   "kind": "seq",
+   "domain": "s",
+   "reads": [
+    "rd_ptr_sync_bin",
+    "wr_ptr_reg",
+    "wr_ptr_commit_reg",
+    "rd_ptr_conv_reg",
+    "s_pause_req"
+   ],
+   "writes": [
+    "rd_ptr_conv_reg",
+    "s_status_depth",
+    "s_status_depth_commit",
+    "s_pause_req_sync1_reg"
+   ],
+   "body": "rd_ptr_conv_reg <= rd_ptr_sync_bin;\ns_status_depth <= wr_ptr_reg - rd_ptr_conv_reg;\ns_status_depth_commit <= wr_ptr_commit_reg - rd_ptr_conv_reg;\ns_pause_req_sync1_reg <= s_pause_req;"
+  },
+  {
+   "id": "c_wr_gray",
+   "kind": "cdc_sync",
+   "src": "wr_ptr_gray_reg",
+   "src_domain": "s",
+   "dst": "wr_ptr_gray_sync2_reg",
+   "dst_domain": "m",
+   "style": "gray"
+  },
+  {
+   "id": "c_rd_gray",
+   "kind": "cdc_sync",
+   "src": "rd_ptr_gray_reg",
+   "src_domain": "m",
+   "dst": "rd_ptr_gray_sync2_reg",
+   "dst_domain": "s",
+   "style": "gray"
+  },
+  {
+   "id": "c_s_rst",
+   "kind": "cdc_sync",
+   "src": "m_side_ready_reg",
+   "src_domain": "m",
+   "dst": "m_side_ready_sync",
+   "dst_domain": "s",
+   "style": "2ff"
+  },
+  {
+   "id": "c_m_rst",
+   "kind": "cdc_sync",
+   "src": "s_side_ready_reg",
+   "src_domain": "s",
+   "dst": "s_side_ready_sync",
+   "dst_domain": "m",
+   "style": "2ff"
+  },
+  {
+   "id": "c_ovf",
+   "kind": "cdc_sync",
+   "src": "overflow_sync1_reg",
+   "src_domain": "s",
+   "dst": "overflow_sync3_reg",
+   "dst_domain": "m",
+   "style": "2ff"
+  },
+  {
+   "id": "c_preq",
+   "kind": "cdc_sync",
+   "src": "s_pause_req_sync1_reg",
+   "src_domain": "s",
+   "dst": "s_pause_req_sync3_reg",
+   "dst_domain": "m",
+   "style": "2ff"
+  },
+  {
+   "id": "c_pack",
+   "kind": "cdc_sync",
+   "src": "s_pause_ack_sync1_reg",
+   "src_domain": "m",
+   "dst": "s_pause_ack_sync3_reg",
+   "dst_domain": "s",
+   "style": "2ff"
+  },
+  {
+   "id": "k_m_g2b",
+   "kind": "comb",
+   "reads": [
+    "wr_ptr_gray_sync2_reg"
+   ],
+   "writes": [
+    "wr_ptr_sync_bin"
+   ],
+   "body": "wr_ptr_sync_bin = '0;\nfor (int i = 0; i <= ADDR_WIDTH; i++) begin\n  wr_ptr_sync_bin[i] = ^(wr_ptr_gray_sync2_reg >> i);\nend"
+  },
+  {
+   "id": "k_m_comb",
+   "kind": "comb",
+   "reads": [
+    "rd_ptr_reg",
+    "rd_ptr_gray_reg",
+    "wr_ptr_gray_sync2_reg",
+    "m_axis_tready",
+    "pause_reg",
+    "m_axis_tvalid_pipe_reg",
+    "m_axis_pipe_reg1",
+    "m_terminate_frame_reg",
+    "overflow_sync3_reg",
+    "overflow_sync4_reg",
+    "m_axis_tlast_pipe",
+    "m_axis_tvalid_pipe",
+    "s_side_ready_sync"
+   ],
+   "writes": [
+    "rd_ptr_inc",
+    "empty",
+    "m_axis_tready_pipe",
+    "m_axis_tvalid_pipe",
+    "m_axis_tlast_pipe",
+    "m_axis_tdata",
+    "m_axis_tkeep",
+    "m_axis_tvalid",
+    "m_axis_tlast",
+    "m_axis_tid",
+    "m_axis_tdest",
+    "m_axis_tuser",
+    "m_status_overflow",
+    "m_status_bad_frame",
+    "m_status_good_frame",
+    "m_pause_ack",
+    "m_rst_sync3_reg"
+   ],
+   "body": "m_rst_sync3_reg = !s_side_ready_sync;\nrd_ptr_inc = rd_ptr_reg + 1'b1;\nempty = rd_ptr_gray_reg == wr_ptr_gray_sync2_reg;\nm_axis_tready_pipe = m_axis_tready && !pause_reg;\nm_axis_tvalid_pipe = m_axis_tvalid_pipe_reg[1];\nm_axis_tlast_pipe = m_axis_pipe_reg1[LAST_OFFSET] | m_terminate_frame_reg;\nm_axis_tdata = m_axis_pipe_reg1[DATA_WIDTH-1:0];\nm_axis_tkeep = '1;\nm_axis_tvalid = m_axis_tvalid_pipe && !pause_reg;\nm_axis_tlast = m_axis_tlast_pipe;\nm_axis_tid = m_axis_pipe_reg1[ID_OFFSET +: ID_WIDTH];\nm_axis_tdest = m_axis_pipe_reg1[DEST_OFFSET +: DEST_WIDTH];\nm_axis_tuser = m_terminate_frame_reg ? USER_WIDTH'(USER_BAD_FRAME_VALUE) : m_axis_pipe_reg1[USER_OFFSET +: USER_WIDTH];\nm_status_overflow = overflow_sync3_reg ^ overflow_sync4_reg;\nm_status_bad_frame = 1'b0;\nm_status_good_frame = 1'b0;\nm_pause_ack = pause_reg;"
+  },
+  {
+   "id": "k_rd",
+   "kind": "seq",
+   "domain": "m",
+   "reads": [
+    "m_axis_tready_pipe",
+    "m_axis_tvalid_pipe_reg",
+    "empty",
+    "m_rst_sync3_reg",
+    "m_drop_frame_reg",
+    "rd_ptr_inc",
+    "m_axis_tvalid_pipe",
+    "m_axis_tlast_pipe",
+    "m_frame_reg",
+    "m_terminate_frame_reg"
+   ],
+   "writes": [
+    "m_axis_tvalid_pipe_reg",
+    "m_terminate_frame_reg",
+    "rd_ptr_reg",
+    "rd_ptr_gray_reg",
+    "m_frame_reg",
+    "m_drop_frame_reg"
+   ],
+   "body": "if (m_axis_tready_pipe) begin\n  m_axis_tvalid_pipe_reg[1] <= 1'b0;\n  m_terminate_frame_reg <= 1'b0;\nend\nif (m_axis_tready_pipe || !m_axis_tvalid_pipe_reg[1]) begin\n  m_axis_tvalid_pipe_reg[1] <= m_axis_tvalid_pipe_reg[0];\n  m_axis_tvalid_pipe_reg[0] <= 1'b0;\nend\nif (m_axis_tready_pipe || (~m_axis_tvalid_pipe_reg != '0)) begin\n  m_axis_tvalid_pipe_reg[0] <= 1'b0;\n  if (!empty && !m_rst_sync3_reg && !m_drop_frame_reg) begin\n    m_axis_tvalid_pipe_reg[0] <= 1'b1;\n    rd_ptr_reg <= rd_ptr_inc;\n    rd_ptr_gray_reg <= rd_ptr_inc ^ (rd_ptr_inc >> 1);\n  end\nend\nif (m_axis_tvalid_pipe) begin\n  if (m_axis_tlast_pipe && m_axis_tready_pipe) begin\n    m_frame_reg <= 1'b0;\n  end else begin\n    m_frame_reg <= 1'b1;\n  end\nend\nif (m_drop_frame_reg && (m_axis_tready_pipe || !m_axis_tvalid_pipe)) begin\n  m_axis_tvalid_pipe_reg[1] <= 1'b1;\n  m_terminate_frame_reg <= 1'b1;\n  m_drop_frame_reg <= 1'b0;\nend\nif (m_rst_sync3_reg) begin\n  m_axis_tvalid_pipe_reg[0] <= 1'b0;\n  if (m_frame_reg && (!m_axis_tvalid_pipe || (m_axis_tvalid_pipe && !m_axis_tlast_pipe)) && !(m_drop_frame_reg || m_terminate_frame_reg)) begin\n    m_drop_frame_reg <= 1'b1;\n  end\nend\nif (m_rst_sync3_reg) begin\n  rd_ptr_reg <= '0;\n  rd_ptr_gray_reg <= '0;\nend"
+  },
+  {
+   "id": "k_rd_data",
+   "kind": "seq",
+   "domain": "m",
+   "reads": [
+    "m_axis_tready_pipe",
+    "m_axis_tvalid_pipe_reg",
+    "m_axis_pipe_reg0",
+    "mem",
+    "rd_ptr_reg"
+   ],
+   "writes": [
+    "m_axis_pipe_reg1",
+    "m_axis_pipe_reg0"
+   ],
+   "body": "if (m_axis_tready_pipe || !m_axis_tvalid_pipe_reg[1]) begin\n  m_axis_pipe_reg1 <= m_axis_pipe_reg0;\nend\nif (m_axis_tready_pipe || (~m_axis_tvalid_pipe_reg != '0)) begin\n  m_axis_pipe_reg0 <= mem[rd_ptr_reg[ADDR_WIDTH-1:0]];\nend"
+  },
+  {
+   "id": "k_m_misc",
+   "kind": "seq",
+   "domain": "m",
+   "reads": [
+    "overflow_sync3_reg"
+   ],
+   "writes": [
+    "m_side_ready_reg",
+    "overflow_sync4_reg"
+   ],
+   "body": "m_side_ready_reg <= 1'b1;\noverflow_sync4_reg <= overflow_sync3_reg;"
+  },
+  {
+   "id": "k_m_status",
+   "kind": "seq",
+   "domain": "m",
+   "reads": [
+    "wr_ptr_sync_bin",
+    "wr_ptr_conv_reg",
+    "rd_ptr_reg",
+    "pause_reg"
+   ],
+   "writes": [
+    "wr_ptr_conv_reg",
+    "m_status_depth",
+    "m_status_depth_commit",
+    "s_pause_ack_sync1_reg"
+   ],
+   "body": "wr_ptr_conv_reg <= wr_ptr_sync_bin;\nm_status_depth <= wr_ptr_conv_reg - rd_ptr_reg;\nm_status_depth_commit <= wr_ptr_conv_reg - rd_ptr_reg;\ns_pause_ack_sync1_reg <= pause_reg;"
+  },
+  {
+   "id": "k_pause",
+   "kind": "seq",
+   "domain": "m",
+   "reads": [
+    "pause_reg",
+    "m_pause_req",
+    "s_pause_req_sync3_reg",
+    "m_axis_tvalid_pipe",
+    "m_axis_tready",
+    "m_axis_tlast_pipe",
+    "pause_frame_reg"
+   ],
+   "writes": [
+    "pause_reg",
+    "pause_frame_reg"
+   ],
+   "body": "if (pause_reg) begin\n  pause_reg <= m_pause_req || s_pause_req_sync3_reg;\nend else if (m_axis_tvalid_pipe) begin\n  pause_frame_reg <= 1'b1;\n  if (m_axis_tready && m_axis_tlast_pipe) begin\n    pause_frame_reg <= 1'b0;\n    pause_reg <= m_pause_req || s_pause_req_sync3_reg;\n  end\nend else if (!pause_frame_reg) begin\n  pause_reg <= m_pause_req || s_pause_req_sync3_reg;\nend"
+  }
+ ]
+}

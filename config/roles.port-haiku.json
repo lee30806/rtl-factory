@@ -1,0 +1,46 @@
+{
+  "_note": "P11 실제 에이전트 실행용 (2026-10-16 사용자 결정): 모든 역할을 Claude Code CLI의 claude-haiku-5-5, effort medium으로. 나머지는 config/roles.json과 같음. 2026-10-17 사용자 결정: R6 3회차를 위해 에이전트 실행 예산 120, 3회차 재구성을 위해 160",
+  "agents": "config/agents/agents.claude-haiku.json",
+  "roles": {
+    "architect": {
+      "agent": "cc-haiku-verifier",
+      "count": 1
+    },
+    "author": {
+      "agent": "cc-haiku-author",
+      "count": 2,
+      "langs": [
+        "sv",
+        "py"
+      ]
+    },
+    "verifier": {
+      "agent": "cc-haiku-verifier",
+      "count": 2
+    },
+    "repair": {
+      "agent": "cc-haiku-author",
+      "count": 1
+    },
+    "arbiter": {
+      "agent": "cc-haiku-verifier",
+      "count": 1
+    },
+    "porter": {
+      "agent": "cc-haiku-author",
+      "count": 1
+    },
+    "spec_writer": {
+      "agent": "cc-haiku-verifier",
+      "count": 1
+    }
+  },
+  "limits": {
+    "repair_per_candidate": 3,
+    "arbiter_after_repeats": 2,
+    "agent_retries": 1,
+    "budget_agent_runs": 160,
+    "porter_fix": 3,
+    "spec_revise": 3
+  }
+}

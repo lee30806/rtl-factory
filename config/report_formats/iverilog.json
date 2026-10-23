@@ -1,0 +1,10 @@
+{
+ "tool": "iverilog",
+ "description": "Icarus Verilog 컴파일과 elaboration 메시지. 예: rtl/a.sv:2: error: Unable to bind wire/reg/memory `c' in `t'",
+ "patterns": [
+  {"regex": "^(?P<file>[^:\\s]+):(?P<line>\\d+): (?P<severity>error|warning|sorry): (?P<message>.*)$",
+   "defaults": {"rule": "IVERILOG"}}
+ ],
+ "ignore": ["error\\(s\\) during elaboration", "^No top level modules"],
+ "severity_map": {"sorry": "error"}
+}

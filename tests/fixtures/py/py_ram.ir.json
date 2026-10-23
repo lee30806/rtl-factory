@@ -1,0 +1,25 @@
+{
+  "module": "py_ram",
+  "role": "module",
+  "lang": "py",
+  "params": [{ "name": "AW", "type": "int", "default": "3" }, { "name": "DW", "type": "int", "default": "8" }],
+  "domains": [{ "name": "sys", "clock": "clk", "edge": "pos",
+                "reset": { "port": "rst", "active": "high", "async": false } }],
+  "ports": [
+    { "name": "we",    "dir": "input",  "type": "logic",            "domain": "sys" },
+    { "name": "waddr", "dir": "input",  "type": "logic [AW-1:0]",   "domain": "sys" },
+    { "name": "wdata", "dir": "input",  "type": "logic [DW-1:0]",   "domain": "sys" },
+    { "name": "re",    "dir": "input",  "type": "logic",            "domain": "sys" },
+    { "name": "raddr", "dir": "input",  "type": "logic [AW-1:0]",   "domain": "sys" },
+    { "name": "rdata", "dir": "output", "type": "logic [DW-1:0]",   "domain": "sys", "kind": "reg", "reset": "'0" },
+    { "name": "rhi",   "dir": "output", "type": "logic [3:0]",      "domain": "sys", "kind": "wire" }
+  ],
+  "signals": [{ "name": "word", "kind": "wire", "type": "logic [DW-1:0]" }],
+  "blocks": [
+    { "id": "k_mem", "kind": "memory", "name": "mem", "word_type": "logic [DW-1:0]", "depth": "2**AW", "impl": "inferred",
+      "ports": [{ "name": "w", "kind": "write", "domain": "sys" }, { "name": "r", "kind": "read", "domain": "sys" }] },
+    { "id": "k_word", "kind": "comb", "body": "word = wdata ^ u(8, 0x5A)\nrhi = rdata[7:4]" },
+    { "id": "k_write", "kind": "seq", "domain": "sys", "body": "if we:\n    mem[waddr] = word" },
+    { "id": "k_read", "kind": "seq", "domain": "sys", "body": "if re:\n    rdata = mem[raddr] + 1" }
+  ]
+}

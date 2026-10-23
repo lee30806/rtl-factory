@@ -1,0 +1,267 @@
+{
+ "module": "axis_adapter",
+ "role": "module",
+ "lang": "py",
+ "params": [
+  {
+   "name": "S_DATA_WIDTH",
+   "type": "int",
+   "default": "32"
+  },
+  {
+   "name": "S_KEEP_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "S_KEEP_WIDTH",
+   "type": "int",
+   "default": "4"
+  },
+  {
+   "name": "M_DATA_WIDTH",
+   "type": "int",
+   "default": "8"
+  },
+  {
+   "name": "M_KEEP_ENABLE",
+   "type": "int",
+   "default": "0"
+  },
+  {
+   "name": "M_KEEP_WIDTH",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "ID_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "ID_WIDTH",
+   "type": "int",
+   "default": "8"
+  },
+  {
+   "name": "DEST_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "DEST_WIDTH",
+   "type": "int",
+   "default": "8"
+  },
+  {
+   "name": "USER_ENABLE",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "USER_WIDTH",
+   "type": "int",
+   "default": "1"
+  },
+  {
+   "name": "SEG_DATA_WIDTH",
+   "type": "int",
+   "default": "8",
+   "local": true
+  },
+  {
+   "name": "SEG_KEEP_WIDTH",
+   "type": "int",
+   "default": "1",
+   "local": true
+  }
+ ],
+ "domains": [
+  {
+   "name": "sys",
+   "clock": "clk",
+   "edge": "pos",
+   "reset": {
+    "port": "rst",
+    "active": "high",
+    "async": false
+   }
+  }
+ ],
+ "ports": [
+  {
+   "bundle": "s_axis",
+   "protocol": "valid_ready",
+   "role": "sink",
+   "domain": "sys",
+   "signals": [
+    {
+     "name": "s_axis_tdata",
+     "dir": "input",
+     "type": "logic [S_DATA_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tkeep",
+     "dir": "input",
+     "type": "logic [S_KEEP_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tvalid",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "s_axis_tready",
+     "dir": "output",
+     "type": "logic",
+     "kind": "wire"
+    },
+    {
+     "name": "s_axis_tlast",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "s_axis_tid",
+     "dir": "input",
+     "type": "logic [ID_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tdest",
+     "dir": "input",
+     "type": "logic [DEST_WIDTH-1:0]"
+    },
+    {
+     "name": "s_axis_tuser",
+     "dir": "input",
+     "type": "logic [USER_WIDTH-1:0]"
+    }
+   ]
+  },
+  {
+   "bundle": "m_axis",
+   "protocol": "valid_ready",
+   "role": "source",
+   "domain": "sys",
+   "signals": [
+    {
+     "name": "m_axis_tdata",
+     "dir": "output",
+     "type": "logic [M_DATA_WIDTH-1:0]",
+     "kind": "reg"
+    },
+    {
+     "name": "m_axis_tkeep",
+     "dir": "output",
+     "type": "logic [M_KEEP_WIDTH-1:0]",
+     "kind": "wire"
+    },
+    {
+     "name": "m_axis_tvalid",
+     "dir": "output",
+     "type": "logic",
+     "kind": "reg",
+     "reset": "1'b0"
+    },
+    {
+     "name": "m_axis_tready",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "m_axis_tlast",
+     "dir": "output",
+     "type": "logic",
+     "kind": "reg"
+    },
+    {
+     "name": "m_axis_tid",
+     "dir": "output",
+     "type": "logic [ID_WIDTH-1:0]",
+     "kind": "reg"
+    },
+    {
+     "name": "m_axis_tdest",
+     "dir": "output",
+     "type": "logic [DEST_WIDTH-1:0]",
+     "kind": "reg"
+    },
+    {
+     "name": "m_axis_tuser",
+     "dir": "output",
+     "type": "logic [USER_WIDTH-1:0]",
+     "kind": "reg"
+    }
+   ]
+  }
+ ],
+ "signals": [
+  {
+   "name": "s_axis_tkeep_int",
+   "kind": "wire",
+   "type": "logic [S_KEEP_WIDTH-1:0]"
+  },
+  {
+   "name": "s_axis_tdata_reg",
+   "kind": "reg",
+   "type": "logic [S_DATA_WIDTH-1:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "s_axis_tkeep_reg",
+   "kind": "reg",
+   "type": "logic [S_KEEP_WIDTH-1:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "s_axis_tvalid_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys",
+   "reset": "1'b0"
+  },
+  {
+   "name": "s_axis_tlast_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys"
+  },
+  {
+   "name": "s_axis_tid_reg",
+   "kind": "reg",
+   "type": "logic [ID_WIDTH-1:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "s_axis_tdest_reg",
+   "kind": "reg",
+   "type": "logic [DEST_WIDTH-1:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "s_axis_tuser_reg",
+   "kind": "reg",
+   "type": "logic [USER_WIDTH-1:0]",
+   "domain": "sys"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_ports",
+   "kind": "comb",
+   "body": "s_axis_tkeep_int = s_axis_tkeep if S_KEEP_ENABLE != 0 else ~0\ns_axis_tready = not s_axis_tvalid_reg\nm_axis_tkeep = ~0"
+  },
+  {
+   "id": "k_ctl",
+   "kind": "seq",
+   "domain": "sys",
+   "body": "m_axis_tvalid = m_axis_tvalid and not m_axis_tready\nif not m_axis_tvalid or m_axis_tready:\n    if s_axis_tvalid_reg:\n        m_axis_tvalid = True\n        if (s_axis_tkeep_reg >> SEG_KEEP_WIDTH) == 0:\n            s_axis_tvalid_reg = False\n    elif s_axis_tvalid and s_axis_tready:\n        m_axis_tvalid = True\n        if S_KEEP_ENABLE != 0 and (s_axis_tkeep_int >> SEG_KEEP_WIDTH) == 0:\n            s_axis_tvalid_reg = False\n        else:\n            s_axis_tvalid_reg = True\nelif s_axis_tvalid and s_axis_tready:\n    s_axis_tvalid_reg = True"
+  },
+  {
+   "id": "k_data",
+   "kind": "seq",
+   "domain": "sys",
+   "body": "if not m_axis_tvalid or m_axis_tready:\n    m_axis_tdata = s_axis_tdata_reg[M_DATA_WIDTH - 1:0] if s_axis_tvalid_reg else s_axis_tdata[M_DATA_WIDTH - 1:0]\n    m_axis_tlast = False\n    m_axis_tid = s_axis_tid_reg if s_axis_tvalid_reg else s_axis_tid\n    m_axis_tdest = s_axis_tdest_reg if s_axis_tvalid_reg else s_axis_tdest\n    m_axis_tuser = s_axis_tuser_reg if s_axis_tvalid_reg else s_axis_tuser\n    if s_axis_tvalid_reg:\n        s_axis_tdata_reg = s_axis_tdata_reg >> SEG_DATA_WIDTH\n        s_axis_tkeep_reg = s_axis_tkeep_reg >> SEG_KEEP_WIDTH\n        if (s_axis_tkeep_reg >> SEG_KEEP_WIDTH) == 0:\n            m_axis_tlast = s_axis_tlast_reg\n    elif s_axis_tvalid and s_axis_tready:\n        s_axis_tdata_reg = s_axis_tdata >> SEG_DATA_WIDTH\n        s_axis_tkeep_reg = s_axis_tkeep_int >> SEG_KEEP_WIDTH\n        s_axis_tlast_reg = s_axis_tlast\n        s_axis_tid_reg = s_axis_tid\n        s_axis_tdest_reg = s_axis_tdest\n        s_axis_tuser_reg = s_axis_tuser\n        if S_KEEP_ENABLE != 0 and (s_axis_tkeep_int >> SEG_KEEP_WIDTH) == 0:\n            m_axis_tlast = s_axis_tlast\nelif s_axis_tvalid and s_axis_tready:\n    s_axis_tdata_reg = s_axis_tdata\n    s_axis_tkeep_reg = s_axis_tkeep_int\n    s_axis_tlast_reg = s_axis_tlast\n    s_axis_tid_reg = s_axis_tid\n    s_axis_tdest_reg = s_axis_tdest\n    s_axis_tuser_reg = s_axis_tuser"
+  }
+ ]
+}

@@ -1,0 +1,49 @@
+{
+ "module": "mc_top",
+ "role": "block_top",
+ "params": [],
+ "domains": [
+  {"name": "a", "clock": "a_clk", "freq_mhz": 100, "edge": "pos",
+   "reset": {"port": "a_rst_n", "active": "low", "async": true, "synchronize": true},
+   "async_to": ["b"]},
+  {"name": "a2", "clock": "a2_clk", "freq_mhz": 50, "edge": "pos", "sync_to": {"domain": "a", "div": 2},
+   "reset": {"port": "a_rst_n", "active": "low", "async": true, "synchronize": true}},
+  {"name": "b", "clock": "b_clk", "freq_mhz": 75, "edge": "pos",
+   "reset": {"port": "b_rst_n", "active": "low", "async": true}, "async_to": ["a"]}
+ ],
+ "ports": [
+  {"name": "a_soft_rst", "dir": "input", "type": "logic", "domain": "a"},
+  {"bundle": "in", "protocol": "valid_ready", "role": "sink", "domain": "a", "signals": [
+   {"name": "in_valid", "dir": "input", "type": "logic"},
+   {"name": "in_ready", "dir": "output", "type": "logic", "kind": "wire"},
+   {"name": "in_data", "dir": "input", "type": "logic [7:0]"}]},
+  {"bundle": "out", "protocol": "valid_ready", "role": "source", "domain": "b", "signals": [
+   {"name": "out_valid", "dir": "output", "type": "logic", "kind": "wire"},
+   {"name": "out_ready", "dir": "input", "type": "logic"},
+   {"name": "out_data", "dir": "output", "type": "logic [7:0]", "kind": "wire"}]},
+  {"name": "pulse_in", "dir": "input", "type": "logic", "domain": "a2"},
+  {"name": "pulse_out", "dir": "output", "type": "logic", "domain": "b", "kind": "wire"},
+  {"name": "cnt_out", "dir": "output", "type": "logic [3:0]", "domain": "a2", "kind": "wire"}
+ ],
+ "signals": [
+  {"name": "x_valid", "kind": "wire", "type": "logic"},
+  {"name": "x_ready", "kind": "wire", "type": "logic"},
+  {"name": "x_data", "kind": "wire", "type": "logic [7:0]"}
+ ],
+ "blocks": [
+  {"id": "f_x", "kind": "cdc_fifo", "src_domain": "a", "dst_domain": "b", "depth": 4,
+   "src": {"valid": "x_valid", "ready": "x_ready", "data": "x_data"},
+   "dst": {"valid": "out_valid", "ready": "out_ready", "data": "out_data"}},
+  {"id": "p_x", "kind": "cdc_sync", "src": "pulse_in", "src_domain": "a2", "dst": "pulse_out", "dst_domain": "b",
+   "style": "pulse"}
+ ],
+ "instances": [{"name": "u_src", "module": "mc_src", "domain_map": {"sys": "a", "slow": "a2"}}],
+ "connections": [
+  {"id": "c_in", "from": "self.in", "to": "u_src.s"},
+  {"id": "c_soft", "from": "self.a_soft_rst", "to": "u_src.soft_rst"},
+  {"id": "c_mv", "from": "u_src.m_valid", "to": "self.x_valid"},
+  {"id": "c_md", "from": "u_src.m_data", "to": "self.x_data"},
+  {"id": "c_mr", "from": "self.x_ready", "to": "u_src.m_ready"},
+  {"id": "c_cnt", "from": "u_src.cnt", "to": "self.cnt_out"}
+ ]
+}

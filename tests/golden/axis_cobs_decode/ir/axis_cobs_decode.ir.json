@@ -1,0 +1,445 @@
+{
+ "module": "axis_cobs_decode",
+ "role": "module",
+ "params": [],
+ "domains": [
+  {
+   "name": "sys",
+   "clock": "clk",
+   "edge": "pos",
+   "reset": {
+    "port": "rst",
+    "active": "high",
+    "async": false
+   }
+  }
+ ],
+ "ports": [
+  {
+   "bundle": "s_axis",
+   "protocol": "valid_ready",
+   "role": "sink",
+   "domain": "sys",
+   "signals": [
+    {
+     "name": "s_axis_tdata",
+     "dir": "input",
+     "type": "logic [7:0]"
+    },
+    {
+     "name": "s_axis_tvalid",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "s_axis_tready",
+     "dir": "output",
+     "type": "logic",
+     "kind": "reg",
+     "reset": "1'b0"
+    },
+    {
+     "name": "s_axis_tlast",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "s_axis_tuser",
+     "dir": "input",
+     "type": "logic"
+    }
+   ]
+  },
+  {
+   "bundle": "m_axis",
+   "protocol": "valid_ready",
+   "role": "source",
+   "domain": "sys",
+   "signals": [
+    {
+     "name": "m_axis_tdata",
+     "dir": "output",
+     "type": "logic [7:0]",
+     "kind": "reg"
+    },
+    {
+     "name": "m_axis_tvalid",
+     "dir": "output",
+     "type": "logic",
+     "kind": "reg",
+     "reset": "1'b0"
+    },
+    {
+     "name": "m_axis_tready",
+     "dir": "input",
+     "type": "logic"
+    },
+    {
+     "name": "m_axis_tlast",
+     "dir": "output",
+     "type": "logic",
+     "kind": "reg"
+    },
+    {
+     "name": "m_axis_tuser",
+     "dir": "output",
+     "type": "logic",
+     "kind": "reg"
+    }
+   ]
+  }
+ ],
+ "types": [
+  {
+   "name": "state_e",
+   "kind": "enum",
+   "base": "logic [1:0]",
+   "members": [
+    "IDLE",
+    "SEGMENT",
+    "NEXT_SEGMENT"
+   ]
+  }
+ ],
+ "signals": [
+  {
+   "name": "count_reg",
+   "kind": "reg",
+   "type": "logic [7:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "count_next",
+   "kind": "wire",
+   "type": "logic [7:0]"
+  },
+  {
+   "name": "suppress_zero_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys"
+  },
+  {
+   "name": "suppress_zero_next",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "temp_tdata_reg",
+   "kind": "reg",
+   "type": "logic [7:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "temp_tdata_next",
+   "kind": "wire",
+   "type": "logic [7:0]"
+  },
+  {
+   "name": "temp_tvalid_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys",
+   "reset": "1'b0"
+  },
+  {
+   "name": "temp_tvalid_next",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tdata_int",
+   "kind": "wire",
+   "type": "logic [7:0]"
+  },
+  {
+   "name": "m_axis_tvalid_int",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tlast_int",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tuser_int",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tready_int_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys",
+   "reset": "1'b0"
+  },
+  {
+   "name": "m_axis_tready_int_early",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "s_axis_tready_next",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "m_axis_tvalid_next",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "temp_m_axis_tdata_reg",
+   "kind": "reg",
+   "type": "logic [7:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "temp_m_axis_tvalid_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys",
+   "reset": "1'b0"
+  },
+  {
+   "name": "temp_m_axis_tvalid_next",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "temp_m_axis_tlast_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys"
+  },
+  {
+   "name": "temp_m_axis_tuser_reg",
+   "kind": "reg",
+   "type": "logic",
+   "domain": "sys"
+  },
+  {
+   "name": "store_axis_int_to_output",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "store_axis_int_to_temp",
+   "kind": "wire",
+   "type": "logic"
+  },
+  {
+   "name": "store_axis_temp_to_output",
+   "kind": "wire",
+   "type": "logic"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_fsm",
+   "kind": "fsm",
+   "domain": "sys",
+   "state_type": "state_e",
+   "state_name": "state",
+   "reset_state": "IDLE",
+   "reads": [
+    "s_axis_tready",
+    "s_axis_tvalid",
+    "s_axis_tdata",
+    "s_axis_tlast",
+    "count_reg"
+   ],
+   "transitions": [
+    {
+     "id": "t_idle_next",
+     "from": "IDLE",
+     "to": "NEXT_SEGMENT",
+     "cond": "s_axis_tready && s_axis_tvalid && s_axis_tdata == 8'd1"
+    },
+    {
+     "id": "t_idle_seg",
+     "from": "IDLE",
+     "to": "SEGMENT",
+     "cond": "s_axis_tready && s_axis_tvalid && s_axis_tdata != 8'd0"
+    },
+    {
+     "id": "t_seg_zero",
+     "from": "SEGMENT",
+     "to": "IDLE",
+     "cond": "s_axis_tready && s_axis_tvalid && s_axis_tdata == 8'd0"
+    },
+    {
+     "id": "t_seg_last",
+     "from": "SEGMENT",
+     "to": "IDLE",
+     "cond": "s_axis_tready && s_axis_tvalid && s_axis_tlast"
+    },
+    {
+     "id": "t_seg_next",
+     "from": "SEGMENT",
+     "to": "NEXT_SEGMENT",
+     "cond": "s_axis_tready && s_axis_tvalid && count_reg == 8'd1"
+    },
+    {
+     "id": "t_next_zero",
+     "from": "NEXT_SEGMENT",
+     "to": "IDLE",
+     "cond": "s_axis_tready && s_axis_tvalid && s_axis_tdata == 8'd0"
+    },
+    {
+     "id": "t_next_last",
+     "from": "NEXT_SEGMENT",
+     "to": "IDLE",
+     "cond": "s_axis_tready && s_axis_tvalid && s_axis_tlast"
+    },
+    {
+     "id": "t_next_next",
+     "from": "NEXT_SEGMENT",
+     "to": "NEXT_SEGMENT",
+     "cond": "s_axis_tready && s_axis_tvalid && s_axis_tdata == 8'd1"
+    },
+    {
+     "id": "t_next_seg",
+     "from": "NEXT_SEGMENT",
+     "to": "SEGMENT",
+     "cond": "s_axis_tready && s_axis_tvalid"
+    }
+   ]
+  },
+  {
+   "id": "k_dec",
+   "kind": "comb",
+   "reads": [
+    "state_q",
+    "count_reg",
+    "suppress_zero_reg",
+    "temp_tdata_reg",
+    "temp_tvalid_reg",
+    "m_axis_tready_int_early",
+    "m_axis_tready_int_reg",
+    "s_axis_tready",
+    "s_axis_tvalid",
+    "s_axis_tdata",
+    "s_axis_tlast",
+    "s_axis_tuser"
+   ],
+   "writes": [
+    "count_next",
+    "suppress_zero_next",
+    "temp_tdata_next",
+    "temp_tvalid_next",
+    "m_axis_tdata_int",
+    "m_axis_tvalid_int",
+    "m_axis_tlast_int",
+    "m_axis_tuser_int",
+    "s_axis_tready_next"
+   ],
+   "body": "count_next = count_reg;\nsuppress_zero_next = suppress_zero_reg;\ntemp_tdata_next = temp_tdata_reg;\ntemp_tvalid_next = temp_tvalid_reg;\nm_axis_tdata_int = 8'd0;\nm_axis_tvalid_int = 1'b0;\nm_axis_tlast_int = 1'b0;\nm_axis_tuser_int = 1'b0;\ns_axis_tready_next = 1'b0;\ncase (state_q)\n  IDLE: begin\n    s_axis_tready_next = m_axis_tready_int_early || !temp_tvalid_reg;\n    m_axis_tdata_int = temp_tdata_reg;\n    m_axis_tvalid_int = temp_tvalid_reg;\n    m_axis_tlast_int = temp_tvalid_reg;\n    temp_tvalid_next = temp_tvalid_reg && !m_axis_tready_int_reg;\n    if (s_axis_tready && s_axis_tvalid) begin\n      if (s_axis_tdata != 8'd0) begin\n        count_next = s_axis_tdata - 8'd1;\n        suppress_zero_next = (s_axis_tdata == 8'd255);\n        s_axis_tready_next = m_axis_tready_int_early;\n      end\n    end\n  end\n  SEGMENT: begin\n    s_axis_tready_next = m_axis_tready_int_early;\n    if (s_axis_tready && s_axis_tvalid) begin\n      temp_tdata_next = s_axis_tdata;\n      temp_tvalid_next = 1'b1;\n      m_axis_tdata_int = temp_tdata_reg;\n      m_axis_tvalid_int = temp_tvalid_reg;\n      count_next = count_reg - 8'd1;\n      if (s_axis_tdata == 8'd0) begin\n        temp_tvalid_next = 1'b0;\n        m_axis_tvalid_int = 1'b1;\n        m_axis_tuser_int = 1'b1;\n        m_axis_tlast_int = 1'b1;\n        s_axis_tready_next = 1'b1;\n      end else if (s_axis_tlast) begin\n        if (!(count_reg == 8'd1 && !s_axis_tuser)) begin\n          temp_tvalid_next = 1'b0;\n          m_axis_tvalid_int = 1'b1;\n          m_axis_tuser_int = 1'b1;\n          m_axis_tlast_int = 1'b1;\n          s_axis_tready_next = 1'b1;\n        end\n      end\n    end\n  end\n  NEXT_SEGMENT: begin\n    s_axis_tready_next = m_axis_tready_int_early;\n    if (s_axis_tready && s_axis_tvalid) begin\n      temp_tdata_next = 8'd0;\n      temp_tvalid_next = !suppress_zero_reg;\n      m_axis_tdata_int = temp_tdata_reg;\n      m_axis_tvalid_int = temp_tvalid_reg;\n      if (s_axis_tdata == 8'd0) begin\n        temp_tvalid_next = 1'b0;\n        m_axis_tuser_int = s_axis_tuser;\n        m_axis_tlast_int = 1'b1;\n        s_axis_tready_next = 1'b1;\n      end else if (s_axis_tlast) begin\n        if (!(s_axis_tdata == 8'd1 && !s_axis_tuser)) begin\n          temp_tvalid_next = 1'b0;\n          m_axis_tvalid_int = 1'b1;\n          m_axis_tuser_int = 1'b1;\n          m_axis_tlast_int = 1'b1;\n          s_axis_tready_next = 1'b1;\n        end\n      end else begin\n        count_next = s_axis_tdata - 8'd1;\n        suppress_zero_next = (s_axis_tdata == 8'd255);\n        s_axis_tready_next = m_axis_tready_int_early;\n      end\n    end\n  end\n  default: ;\nendcase"
+  },
+  {
+   "id": "k_regs_rst",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "temp_tvalid_next",
+    "s_axis_tready_next"
+   ],
+   "writes": [
+    "temp_tvalid_reg",
+    "s_axis_tready"
+   ],
+   "body": "temp_tvalid_reg <= temp_tvalid_next;\ns_axis_tready <= s_axis_tready_next;"
+  },
+  {
+   "id": "k_regs",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "count_next",
+    "suppress_zero_next",
+    "temp_tdata_next"
+   ],
+   "writes": [
+    "count_reg",
+    "suppress_zero_reg",
+    "temp_tdata_reg"
+   ],
+   "body": "count_reg <= count_next;\nsuppress_zero_reg <= suppress_zero_next;\ntemp_tdata_reg <= temp_tdata_next;"
+  },
+  {
+   "id": "k_early",
+   "kind": "comb",
+   "reads": [
+    "m_axis_tready",
+    "temp_m_axis_tvalid_reg",
+    "m_axis_tvalid",
+    "m_axis_tvalid_int"
+   ],
+   "writes": [
+    "m_axis_tready_int_early"
+   ],
+   "body": "m_axis_tready_int_early = m_axis_tready || (!temp_m_axis_tvalid_reg && (!m_axis_tvalid || !m_axis_tvalid_int));"
+  },
+  {
+   "id": "k_out_ctl",
+   "kind": "comb",
+   "reads": [
+    "m_axis_tvalid",
+    "temp_m_axis_tvalid_reg",
+    "m_axis_tready_int_reg",
+    "m_axis_tready",
+    "m_axis_tvalid_int"
+   ],
+   "writes": [
+    "m_axis_tvalid_next",
+    "temp_m_axis_tvalid_next",
+    "store_axis_int_to_output",
+    "store_axis_int_to_temp",
+    "store_axis_temp_to_output"
+   ],
+   "body": "m_axis_tvalid_next = m_axis_tvalid;\ntemp_m_axis_tvalid_next = temp_m_axis_tvalid_reg;\nstore_axis_int_to_output = 1'b0;\nstore_axis_int_to_temp = 1'b0;\nstore_axis_temp_to_output = 1'b0;\nif (m_axis_tready_int_reg) begin\n  if (m_axis_tready || !m_axis_tvalid) begin\n    m_axis_tvalid_next = m_axis_tvalid_int;\n    store_axis_int_to_output = 1'b1;\n  end else begin\n    temp_m_axis_tvalid_next = m_axis_tvalid_int;\n    store_axis_int_to_temp = 1'b1;\n  end\nend else if (m_axis_tready) begin\n  m_axis_tvalid_next = temp_m_axis_tvalid_reg;\n  temp_m_axis_tvalid_next = 1'b0;\n  store_axis_temp_to_output = 1'b1;\nend"
+  },
+  {
+   "id": "k_out_rst",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "m_axis_tvalid_next",
+    "m_axis_tready_int_early",
+    "temp_m_axis_tvalid_next"
+   ],
+   "writes": [
+    "m_axis_tvalid",
+    "m_axis_tready_int_reg",
+    "temp_m_axis_tvalid_reg"
+   ],
+   "body": "m_axis_tvalid <= m_axis_tvalid_next;\nm_axis_tready_int_reg <= m_axis_tready_int_early;\ntemp_m_axis_tvalid_reg <= temp_m_axis_tvalid_next;"
+  },
+  {
+   "id": "k_out_data",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "store_axis_int_to_output",
+    "store_axis_temp_to_output",
+    "store_axis_int_to_temp",
+    "m_axis_tdata_int",
+    "m_axis_tlast_int",
+    "m_axis_tuser_int",
+    "temp_m_axis_tdata_reg",
+    "temp_m_axis_tlast_reg",
+    "temp_m_axis_tuser_reg"
+   ],
+   "writes": [
+    "m_axis_tdata",
+    "m_axis_tlast",
+    "m_axis_tuser",
+    "temp_m_axis_tdata_reg",
+    "temp_m_axis_tlast_reg",
+    "temp_m_axis_tuser_reg"
+   ],
+   "body": "if (store_axis_int_to_output) begin\n  m_axis_tdata <= m_axis_tdata_int;\n  m_axis_tlast <= m_axis_tlast_int;\n  m_axis_tuser <= m_axis_tuser_int;\nend else if (store_axis_temp_to_output) begin\n  m_axis_tdata <= temp_m_axis_tdata_reg;\n  m_axis_tlast <= temp_m_axis_tlast_reg;\n  m_axis_tuser <= temp_m_axis_tuser_reg;\nend\nif (store_axis_int_to_temp) begin\n  temp_m_axis_tdata_reg <= m_axis_tdata_int;\n  temp_m_axis_tlast_reg <= m_axis_tlast_int;\n  temp_m_axis_tuser_reg <= m_axis_tuser_int;\nend"
+  }
+ ]
+}

@@ -1,0 +1,17 @@
+{
+ "module": "add8_core",
+ "role": "module",
+ "params": [],
+ "domains": [],
+ "ports": [
+  {"name": "a", "dir": "input", "type": "logic [7:0]", "domain": null},
+  {"name": "b", "dir": "input", "type": "logic [7:0]", "domain": null},
+  {"name": "cin", "dir": "input", "type": "logic", "domain": null},
+  {"name": "sum", "dir": "output", "type": "logic [7:0]", "domain": null, "kind": "wire"},
+  {"name": "cout", "dir": "output", "type": "logic", "domain": null, "kind": "wire"}
+ ],
+ "blocks": [
+  {"id": "k_add", "kind": "comb", "reads": ["a", "b", "cin"], "writes": ["sum", "cout"],
+   "body": "sum = a + b + {7'b0, cin};\ncout = ({1'b0, a} + {1'b0, b} + {8'b0, cin}) > 9'd255;"}
+ ]
+}

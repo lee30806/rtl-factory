@@ -1,0 +1,8 @@
+{
+ "tool": "eda",
+ "description": "department/bin/eda (Sanity와 PI의 오픈소스 대체 검사). 예: SYNTH WARNING axis_crc_core.sv:42 Replacing memory ... / LEC ERROR - 등가 아님: ...",
+ "patterns": [
+  {"regex": "^(?P<rule>LINT|SYNTH|LEC|STA|SDC) (?P<severity>ERROR|WARNING|INFO) (?:(?P<file>[^:\\s]+):(?P<line>\\d+)|-) (?P<message>.*)$"}
+ ],
+ "severity_map": {"ERROR": "error", "WARNING": "warning", "INFO": "info"}
+}

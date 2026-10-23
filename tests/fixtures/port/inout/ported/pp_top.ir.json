@@ -1,0 +1,92 @@
+{
+  "module": "pp_top",
+  "role": "block_top",
+  "params": [],
+  "domains": [
+    {
+      "name": "sys",
+      "clock": "clk",
+      "edge": "pos",
+      "reset": {
+        "port": "rst_n",
+        "active": "low",
+        "async": true
+      }
+    }
+  ],
+  "ports": [
+    {
+      "name": "pad",
+      "dir": "inout",
+      "type": "logic [3:0]",
+      "domain": "sys"
+    },
+    {
+      "name": "q",
+      "dir": "output",
+      "type": "logic [3:0]",
+      "domain": "sys",
+      "kind": "wire"
+    }
+  ],
+  "instances": [
+    {
+      "name": "u_core",
+      "module": "pp_core",
+      "domain_map": {
+        "sys": "sys"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "c_u_core_pad_o",
+      "from": "u_core.pad_o",
+      "to": "self.pad_o"
+    },
+    {
+      "id": "c_u_core_pad_oe",
+      "from": "u_core.pad_oe",
+      "to": "self.pad_oe"
+    },
+    {
+      "id": "c_u_core_pad_i",
+      "from": "self.pad_i",
+      "to": "u_core.pad_i"
+    },
+    {
+      "id": "c_u_core_q",
+      "from": "u_core.q",
+      "to": "self.q"
+    }
+  ],
+  "signals": [
+    {
+      "name": "pad_o",
+      "kind": "wire",
+      "type": "logic [3:0]"
+    },
+    {
+      "name": "pad_oe",
+      "kind": "wire",
+      "type": "logic"
+    },
+    {
+      "name": "pad_i",
+      "kind": "wire",
+      "type": "logic [3:0]"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "t_pad",
+      "kind": "tristate",
+      "pad": "pad",
+      "oe": "pad_oe",
+      "i": "pad_i",
+      "domain": "sys",
+      "style": "push_pull",
+      "o": "pad_o"
+    }
+  ]
+}

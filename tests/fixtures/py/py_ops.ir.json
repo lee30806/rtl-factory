@@ -1,0 +1,29 @@
+{
+  "module": "py_ops",
+  "role": "module",
+  "lang": "py",
+  "params": [{ "name": "K", "type": "int", "default": "3" }],
+  "domains": [{ "name": "sys", "clock": "clk", "edge": "pos",
+                "reset": { "port": "rst", "active": "high", "async": false } }],
+  "ports": [
+    { "name": "a",     "dir": "input",  "type": "logic [7:0]", "domain": "sys" },
+    { "name": "b",     "dir": "input",  "type": "logic [7:0]", "domain": "sys" },
+    { "name": "s",     "dir": "input",  "type": "logic [2:0]", "domain": "sys" },
+    { "name": "sel",   "dir": "input",  "type": "logic",       "domain": "sys" },
+    { "name": "sum9",  "dir": "output", "type": "logic [8:0]",  "domain": "sys", "kind": "wire" },
+    { "name": "inv16", "dir": "output", "type": "logic [15:0]", "domain": "sys", "kind": "wire" },
+    { "name": "cmp8",  "dir": "output", "type": "logic",        "domain": "sys", "kind": "wire" },
+    { "name": "shl16", "dir": "output", "type": "logic [15:0]", "domain": "sys", "kind": "wire" },
+    { "name": "mix",   "dir": "output", "type": "logic [11:0]", "domain": "sys", "kind": "wire" },
+    { "name": "red",   "dir": "output", "type": "logic",        "domain": "sys", "kind": "wire" },
+    { "name": "neg8",  "dir": "output", "type": "logic [7:0]",  "domain": "sys", "kind": "wire" },
+    { "name": "acc",   "dir": "output", "type": "logic [15:0]", "domain": "sys", "kind": "reg", "reset": "'0" },
+    { "name": "par",   "dir": "output", "type": "logic",        "domain": "sys", "kind": "reg", "reset": "1'b0" }
+  ],
+  "blocks": [
+    { "id": "k_ops", "kind": "comb",
+      "body": "sum9 = a + b\ninv16 = ~a\ncmp8 = (a + b) == 0\nshl16 = a << s\nmix = cat(a[3:0], rep(2, b[1:0]), u(4, 9)) if sel else cat(b, a[7:4])\nred = any_bits(a & b) and not all_bits(b) or parity(a)\nneg8 = -a + K" },
+    { "id": "k_acc", "kind": "seq", "domain": "sys",
+      "body": "if sel:\n    acc[7:0] = a\n    acc[15:8] += b\nelse:\n    acc = acc - cat(b, a)\npar = False\nfor i in range(8):\n    if a[i]:\n        par = par ^ 1" }
+  ]
+}

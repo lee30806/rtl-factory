@@ -1,0 +1,51 @@
+{
+ "module": "pipe",
+ "role": "module",
+ "params": [],
+ "domains": [
+  {
+   "name": "sys",
+   "clock": "clk",
+   "edge": "pos"
+  }
+ ],
+ "ports": [
+  {
+   "name": "d",
+   "dir": "input",
+   "type": "logic [3:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "q",
+   "dir": "output",
+   "type": "logic [3:0]",
+   "domain": "sys",
+   "kind": "reg"
+  }
+ ],
+ "signals": [
+  {
+   "name": "s",
+   "kind": "reg",
+   "type": "logic [3:0]",
+   "domain": "sys"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_pipe",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "d",
+    "s"
+   ],
+   "writes": [
+    "s",
+    "q"
+   ],
+   "body": "s <= d;\nq <= s;"
+  }
+ ]
+}

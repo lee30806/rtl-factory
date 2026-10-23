@@ -1,0 +1,233 @@
+{
+ "module": "mix_top",
+ "role": "module",
+ "params": [
+  {
+   "name": "N",
+   "type": "int",
+   "default": "2"
+  },
+  {
+   "name": "DW",
+   "type": "int",
+   "default": "8",
+   "local": true
+  },
+  {
+   "name": "K",
+   "type": "int",
+   "default": "3",
+   "local": true
+  }
+ ],
+ "domains": [
+  {
+   "name": "sys",
+   "clock": "clk",
+   "edge": "pos",
+   "reset": {
+    "port": "rst",
+    "active": "high",
+    "async": false
+   }
+  }
+ ],
+ "ports": [
+  {
+   "name": "a",
+   "dir": "input",
+   "type": "logic [DW-1:0]",
+   "domain": "sys"
+  },
+  {
+   "name": "go",
+   "dir": "input",
+   "type": "logic",
+   "domain": "sys"
+  },
+  {
+   "name": "y0",
+   "dir": "output",
+   "type": "logic [DW-1:0]",
+   "domain": "sys",
+   "kind": "wire"
+  },
+  {
+   "name": "y1",
+   "dir": "output",
+   "type": "logic [DW-1:0]",
+   "domain": "sys",
+   "kind": "wire"
+  },
+  {
+   "name": "state",
+   "dir": "output",
+   "type": "logic [1:0]",
+   "domain": "sys",
+   "kind": "wire"
+  },
+  {
+   "name": "busy",
+   "dir": "output",
+   "type": "logic",
+   "domain": "sys",
+   "kind": "wire"
+  },
+  {
+   "name": "y2",
+   "dir": "output",
+   "type": "logic [DW-1:0]",
+   "domain": "sys",
+   "kind": "wire"
+  }
+ ],
+ "types": [
+  {
+   "name": "st_t",
+   "kind": "enum",
+   "base": "logic [1:0]",
+   "members": [
+    "S_IDLE",
+    "S_RUN",
+    "S_DONE"
+   ]
+  }
+ ],
+ "signals": [
+  {
+   "name": "s_0",
+   "kind": "wire",
+   "type": "logic [DW-1:0]"
+  },
+  {
+   "name": "s_1",
+   "kind": "wire",
+   "type": "logic [DW-1:0]"
+  },
+  {
+   "name": "s_extra",
+   "kind": "wire",
+   "type": "logic [DW-1:0]"
+  },
+  {
+   "name": "st",
+   "kind": "reg",
+   "type": "st_t",
+   "domain": "sys",
+   "reset": "S_IDLE"
+  }
+ ],
+ "blocks": [
+  {
+   "id": "k_st",
+   "kind": "seq",
+   "domain": "sys",
+   "reads": [
+    "st",
+    "go",
+    "s_0"
+   ],
+   "writes": [
+    "st"
+   ],
+   "body": "case (st)\n  S_IDLE: if (go) st <= S_RUN;\n  S_RUN: if (s_0 >= DW'(K)) st <= S_DONE;\n  default: st <= S_IDLE;\nendcase"
+  },
+  {
+   "id": "k_out",
+   "kind": "comb",
+   "reads": [
+    "st",
+    "s_0",
+    "s_1",
+    "s_extra"
+   ],
+   "writes": [
+    "state",
+    "busy",
+    "y0",
+    "y1",
+    "y2"
+   ],
+   "body": "state = st;\nbusy = (st != S_IDLE);\ny0 = s_0;\ny1 = s_1;\ny2 = s_extra;"
+  }
+ ],
+ "instances": [
+  {
+   "name": "u_acc_0",
+   "module": "acc",
+   "params": {
+    "INIT": "0"
+   },
+   "domain_map": {
+    "sys": "sys"
+   }
+  },
+  {
+   "name": "u_acc_1",
+   "module": "acc",
+   "params": {
+    "INIT": "6"
+   },
+   "domain_map": {
+    "sys": "sys"
+   }
+  },
+  {
+   "name": "u_extra",
+   "module": "acc",
+   "params": {
+    "INIT": "5"
+   },
+   "domain_map": {
+    "sys": "sys"
+   }
+  }
+ ],
+ "connections": [
+  {
+   "id": "c_u_acc_0_logic_",
+   "from": "self.a",
+   "to": "u_acc_0.logic_"
+  },
+  {
+   "id": "c_u_acc_0_en",
+   "from": "self.go",
+   "to": "u_acc_0.en"
+  },
+  {
+   "id": "c_u_acc_1_logic_",
+   "from": "self.a",
+   "to": "u_acc_1.logic_"
+  },
+  {
+   "id": "c_u_acc_1_en",
+   "from": "self.go",
+   "to": "u_acc_1.en"
+  },
+  {
+   "id": "c_u_acc_0_sum",
+   "from": "u_acc_0.sum",
+   "to": "self.s_0"
+  },
+  {
+   "id": "c_u_acc_1_sum",
+   "from": "u_acc_1.sum",
+   "to": "self.s_1"
+  },
+  {
+   "id": "c_u_extra_logic_",
+   "from": "self.a",
+   "to": "u_extra.logic_"
+  },
+  {
+   "id": "c_u_extra_en",
+   "from": "self.go",
+   "to": "u_extra.en"
+  },
+  {
+   "id": "c_u_extra_sum",
+   "from": "u_extra.sum",
+   "to": "self.s_extra"
+  }
+ ]
+}

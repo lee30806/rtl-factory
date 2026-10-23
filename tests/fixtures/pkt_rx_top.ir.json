@@ -1,0 +1,25 @@
+{
+  "module": "pkt_rx_top",
+  "role": "block_top",
+  "params": [],
+  "domains": [{ "name": "sys", "clock": "clk", "freq_mhz": 500, "edge": "pos",
+                "reset": { "port": "rst_n", "active": "low", "async": true } }],
+  "ports": [
+    { "bundle": "s", "protocol": "valid_ready", "role": "sink", "domain": "sys",
+      "signals": [
+        { "name": "s_valid", "dir": "input",  "type": "logic" },
+        { "name": "s_ready", "dir": "output", "type": "logic", "kind": "wire" },
+        { "name": "s_data",  "dir": "input",  "type": "logic [7:0]" }
+      ] },
+    { "name": "pkt_valid", "dir": "output", "type": "logic", "domain": "sys", "kind": "wire" }
+  ],
+  "instances": [
+    { "name": "u_parser", "module": "pkt_parser",
+      "params": { "SYNC_BYTE": "8'hA5" },
+      "domain_map": { "sys": "sys" } }
+  ],
+  "connections": [
+    { "id": "c1", "from": "self.s",             "to": "u_parser.s" },
+    { "id": "c2", "from": "u_parser.pkt_valid", "to": "self.pkt_valid" }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "agents": [
+    {
+      "name": "cc-haiku-medium-author",
+      "family": "Claude",
+      "runtime": "claude-code",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--effort",
+        "medium",
+        "--dangerously-skip-permissions",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence"
+      ],
+      "model": "claude-haiku-5-5",
+      "env": {},
+      "vision": true,
+      "timeout_s": 1500,
+      "_note": "2026-10-22 사용자 결정: P11 axis_async_fifo R6 재수행은 claude-haiku-5-5, effort medium"
+    },
+    {
+      "name": "cc-haiku-medium-verifier",
+      "family": "Claude",
+      "runtime": "claude-code",
+      "command": [
+        "claude",
+        "-p",
+        "{prompt}",
+        "--model",
+        "{model}",
+        "--effort",
+        "medium",
+        "--dangerously-skip-permissions",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence"
+      ],
+      "model": "claude-haiku-5-5",
+      "env": {},
+      "vision": true,
+      "timeout_s": 1500,
+      "_note": "2026-10-22 사용자 결정: P11 axis_async_fifo R6 재수행은 claude-haiku-5-5, effort medium"
+    }
+  ]
+}

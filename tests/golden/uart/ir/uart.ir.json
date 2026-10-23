@@ -1,0 +1,44 @@
+{
+  "module": "uart",
+  "role": "block_top",
+  "params": [{ "name": "DATA_WIDTH", "type": "int", "default": "8" }],
+  "domains": [{ "name": "sys", "clock": "clk", "edge": "pos",
+                "reset": { "port": "rst", "active": "high", "async": false } }],
+  "ports": [
+    { "bundle": "s_axis", "protocol": "valid_ready", "role": "sink", "domain": "sys",
+      "signals": [
+        { "name": "s_axis_tdata",  "dir": "input",  "type": "logic [DATA_WIDTH-1:0]" },
+        { "name": "s_axis_tvalid", "dir": "input",  "type": "logic" },
+        { "name": "s_axis_tready", "dir": "output", "type": "logic", "kind": "wire" }
+      ] },
+    { "bundle": "m_axis", "protocol": "valid_ready", "role": "source", "domain": "sys",
+      "signals": [
+        { "name": "m_axis_tdata",  "dir": "output", "type": "logic [DATA_WIDTH-1:0]", "kind": "wire" },
+        { "name": "m_axis_tvalid", "dir": "output", "type": "logic", "kind": "wire" },
+        { "name": "m_axis_tready", "dir": "input",  "type": "logic" }
+      ] },
+    { "name": "rxd", "dir": "input", "type": "logic", "domain": "sys" },
+    { "name": "txd", "dir": "output", "type": "logic", "domain": "sys", "kind": "wire" },
+    { "name": "tx_busy", "dir": "output", "type": "logic", "domain": "sys", "kind": "wire" },
+    { "name": "rx_busy", "dir": "output", "type": "logic", "domain": "sys", "kind": "wire" },
+    { "name": "rx_overrun_error", "dir": "output", "type": "logic", "domain": "sys", "kind": "wire" },
+    { "name": "rx_frame_error", "dir": "output", "type": "logic", "domain": "sys", "kind": "wire" },
+    { "name": "prescale", "dir": "input", "type": "logic [15:0]", "domain": "sys" }
+  ],
+  "instances": [
+    { "name": "uart_tx_inst", "module": "uart_tx", "params": { "DATA_WIDTH": "DATA_WIDTH" }, "domain_map": { "sys": "sys" } },
+    { "name": "uart_rx_inst", "module": "uart_rx", "params": { "DATA_WIDTH": "DATA_WIDTH" }, "domain_map": { "sys": "sys" } }
+  ],
+  "connections": [
+    { "id": "c_s_axis",   "from": "self.s_axis",                  "to": "uart_tx_inst.s_axis" },
+    { "id": "c_txd",      "from": "uart_tx_inst.txd",             "to": "self.txd" },
+    { "id": "c_tx_busy",  "from": "uart_tx_inst.busy",            "to": "self.tx_busy" },
+    { "id": "c_tx_pre",   "from": "self.prescale",                "to": "uart_tx_inst.prescale" },
+    { "id": "c_m_axis",   "from": "uart_rx_inst.m_axis",          "to": "self.m_axis" },
+    { "id": "c_rxd",      "from": "self.rxd",                     "to": "uart_rx_inst.rxd" },
+    { "id": "c_rx_busy",  "from": "uart_rx_inst.busy",            "to": "self.rx_busy" },
+    { "id": "c_rx_ovr",   "from": "uart_rx_inst.overrun_error",   "to": "self.rx_overrun_error" },
+    { "id": "c_rx_frm",   "from": "uart_rx_inst.frame_error",     "to": "self.rx_frame_error" },
+    { "id": "c_rx_pre",   "from": "self.prescale",                "to": "uart_rx_inst.prescale" }
+  ]
+}
