@@ -63,7 +63,7 @@ flowchart LR
 | 자연어 프롬프트 → 10개 섹션 `spec.md` 변환 | `pipeline/agents/spec_writer.py`, `pipeline/spec/check.py` | 원본 RTL 없이 **벤치마크 자연어 프롬프트 + `tables.md`**만 보고 10개 섹션 SPEC을 작성하는 `bench_spec_writer` 프롬프트 변형 추가 (B5 RTL-BenchLS는 기존 `spec_writer` 그대로 사용) |
 | 파이프라인 실행 및 후보 선택 | `pipeline/scheduler/run.py` (`Run`), `experiments/p8a/pilot.py` | `awaiting_approval` 발생 시 자동 결정을 내리고 이어서 도는 무인 루프(`auto_approve`) 추가 |
 | 하위 모듈(IP/셀) 재사용 (`cid005`, ChipVerilog) | `Run(..., cells=...)` 및 L1 `external` 모듈 | 벤치마크가 제공하는 하위 `.v`/`.sv` 파일들을 `cells`로 전달하고 L1 참조 연결 |
-| 합성·면적·타이밍(PPA) 및 LEC 채점 | `experiments/bench/common/runner.py`의 Yosys 호출(`evaluate_ppa`, `yosys_lec`) | 벤치마크 결과 JSON에 셀 수, 조합 루프, LEC 통과 여부 기록. STA(최악 경로 지연)는 아직 없음 |
+| 합성·면적·타이밍(PPA) 및 LEC 채점 | `experiments/bench/common/runner.py`의 Yosys 호출(`evaluate_ppa`, `yosys_lec`) | 벤치마크 결과 JSON에 셀 수, 조합 루프, LEC 통과 여부 기록. STA(최악 경로 지연): **T.B.D** |
 
 ---
 
@@ -147,7 +147,7 @@ rtl-factory/
 
 1. 파이프라인이 `pass`로 끝나면 선택된 후보(`chosen`, 예: `c0` 또는 `c1`)의 모든 모듈 IR을 SV로 방출합니다.
 2. 파이프라인이 `failed`로 끝났더라도 후보 중 마지막 IR이 모두 존재하는 묶음이 있으면, [pilot.py](./experiments/p8a/pilot.py#L58-L75)와 마찬가지로 **후보별(`c0` SV, `c1` Python) 방출 RTL을 외부 채점기에 넣어 각각 통과 여부를 기록**합니다 (`pass_pipeline_and_bench` vs `pass_bench_only` 구분).
-3. 방출된 SV 파일들과 `cells`를 모아 각 벤치마크의 채점기(`iverilog`, `verilator`, CVDP Docker, `yosys_lec`)를 돌리고, 통과한 설계에 대해서는 `evaluate_ppa`(Yosys 합성과 조합 루프 검사)로 합성 셀 수를 함께 수집합니다 (STA는 아직 없음).
+3. 방출된 SV 파일들과 `cells`를 모아 각 벤치마크의 채점기(`iverilog`, `verilator`, CVDP Docker, `yosys_lec`)를 돌리고, 통과한 설계에 대해서는 `evaluate_ppa`(Yosys 합성과 조합 루프 검사)로 합성 셀 수를 함께 수집합니다 (STA: **T.B.D**).
 
 ---
 
@@ -289,4 +289,4 @@ NVIDIA의 **CVDP** 데이터셋에서 본 프로젝트의 목적에 맞는 RTL �
    - `converter_gap`: 프롬프트에는 있었으나 `BenchSpecWriter`가 `spec.md`로 옮기면서 빠뜨린 경우
    - `verifier_miss`: `spec.md`에는 있었으나 파이프라인의 두 Verifier가 모두 놓친 코너 케이스
 4. **합성 및 물리 지표 (PPA):**
-   - Yosys 합성 통과율, 게이트 셀 수(`cells`), 조합 루프 0건 확인 (`evaluate_ppa`). 최악 경로 지연(STA)은 아직 없음
+   - Yosys 합성 통과율, 게이트 셀 수(`cells`), 조합 루프 0건 확인 (`evaluate_ppa`). 최악 경로 지연(STA): **T.B.D**
