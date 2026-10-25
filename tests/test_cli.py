@@ -36,7 +36,7 @@ def test_usage_and_unknown_command(capsys):
 
 def test_dispatch_passes_args_and_exit_code(tmp_path):
     """하위 프로세스로 실제 모듈을 부른다 (runpy가 sys.argv와 __main__을 바꾸므로)."""
-    spec = ROOT / "blocks" / "axis_crc_append" / "block_spec.md"
+    spec = ROOT / "examples" / "i3c_basic_controller" / "spec.md"
     r = subprocess.run([sys.executable, "-m", "pipeline", "spec", "check", str(spec), "-o", str(tmp_path)],
                        cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
