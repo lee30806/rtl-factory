@@ -7,7 +7,9 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import re
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,25 +32,43 @@ def _run_suite(
     auto_approve: bool,
     resume: bool,
     workers: int,
+    max_auto_approves: int = 3,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_by_id: dict[str, BenchResult] = {}
+    if resume:
+        for it in items:
+            rf = out_dir / it.id / "bench_result.json"
+            if rf.exists():
+                saved = json.loads(rf.read_text(encoding="utf-8"))
+                if saved.get("pipeline_status") not in ("paused_quota",):
+                    results_by_id[it.id] = BenchResult(**saved)
+    quota_event = threading.Event()
 
-    def _job(it: BenchItem) -> BenchResult:
+    def _job(it: BenchItem) -> BenchResult | None:
+        if quota_event.is_set():
+            return None
         if mode == "standalone":
-            return run_standalone_item(it, out_dir / it.id, roles, isolate=isolate, resume=resume)
-        return run_bench_item(
-            it,
-            out_dir / it.id,
-            roles,
-            isolate=isolate,
-            auto_approve=auto_approve,
-            resume=resume,
-        )
+            res = run_standalone_item(it, out_dir / it.id, roles, isolate=isolate, resume=resume)
+        else:
+            res = run_bench_item(
+                it,
+                out_dir / it.id,
+                roles,
+                isolate=isolate,
+                auto_approve=auto_approve,
+                max_auto_approves=max_auto_approves,
+                resume=resume,
+            )
+        if res.pipeline_status == "paused_quota":
+            quota_event.set()
+        return res
 
     if workers <= 1:
         for idx, it in enumerate(items, 1):
             res = _job(it)
+            if res is None:
+                break
             results_by_id[it.id] = res
             print(
                 f"[{mode} {idx}/{len(items)}] {it.id}: status={res.pipeline_status} "
@@ -66,8 +86,10 @@ def _run_suite(
             done_cnt = 0
             for fut in concurrent.futures.as_completed(fut_to_item):
                 it = fut_to_item[fut]
-                done_cnt += 1
                 res = fut.result()
+                if res is None:
+                    continue
+                done_cnt += 1
                 results_by_id[it.id] = res
                 print(
                     f"[{mode} {done_cnt}/{len(items)}] {it.id}: status={res.pipeline_status} "
@@ -98,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "build" / "bench" / "rtllm", help="결과 저장 디렉터리")
     ap.add_argument("--auto-approve", action="store_true", default=True, help="waiting_approval 무인 자동 결정 활성화")
     ap.add_argument("--no-auto-approve", dest="auto_approve", action="store_false")
+    ap.add_argument("--max-auto-approves", type=int, default=3, help="문제당 기댓값 수정 무인 승인 상한")
     ap.add_argument("--no-isolate", action="store_true", help="테스트용 샌드박스 격리 해제")
     args = ap.parse_args(argv)
 
@@ -111,7 +134,8 @@ def main(argv: list[str] | None = None) -> int:
         items = [materialize_builtin_pilot(out_dir / "_pilot_src")]
 
     if args.filter:
-        items = [it for it in items if args.filter in it.id or args.filter in it.top]
+        items = [it for it in items if args.filter in it.id or args.filter in it.top
+                 or re.fullmatch(args.filter, it.id) or re.fullmatch(args.filter, it.top)]
     if args.limit > 0:
         items = items[: args.limit]
 
@@ -125,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             auto_approve=args.auto_approve,
             resume=args.resume,
             workers=args.workers,
+            max_auto_approves=args.max_auto_approves,
         )
         h_sum = _run_suite(
             items,
@@ -135,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             auto_approve=args.auto_approve,
             resume=args.resume,
             workers=args.workers,
+            max_auto_approves=args.max_auto_approves,
         )
         return 0 if (s_sum["total"] > 0 or h_sum["total"] > 0) else 1
 
@@ -147,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         auto_approve=args.auto_approve,
         resume=args.resume,
         workers=args.workers,
+        max_auto_approves=args.max_auto_approves,
     )
     return 0 if summary["total"] > 0 and summary["counts"]["bench_pass_any"] > 0 else 1
 

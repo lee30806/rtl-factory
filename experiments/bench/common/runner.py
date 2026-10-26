@@ -231,6 +231,7 @@ def evaluate_rtl(item: BenchItem, sv_files: list[Path], eval_dir: Path) -> dict[
         cmd = [
             "iverilog",
             "-g2012",
+            "-DSYNTHESIS",
             *inc_flags,
             *def_flags,
             *top_Flags,

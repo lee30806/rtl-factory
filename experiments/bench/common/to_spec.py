@@ -45,9 +45,16 @@ BENCH_SPEC_TASK = """\
   - **한 문장 규칙:** 각 요구사항 ID 줄(`- ID (필수) ...`)에는 마침표로 끝나는 **문장 하나만** 쓴다 (두 문장 이상 쓰면 `REQ_MULTI` 경고가 발생함).
   - **프롬프트 충실성 규칙:** `prompt.txt`에 적히지 않은 리셋 해제 직후 첫 사이클 특수 동작(예: 리셋 중의 값을 첫 입력 비트로 간주할지 여부 등)을 임의로 지어내어 필수 요구사항으로 강제하지 않는다. 리셋 해제 후에는 명시적으로 인가된 입력 시퀀스에 대해서만 출력을 규정한다.
 - 6절 (`## 6. 타이밍과 성능`): `- TIM-01 (필수) ...` 형식으로 클럭 에지 기준 출력 갱신 지연과 처리율을 한 줄에 한 문장씩 명시한다.
+  - **지연을 지어내지 않는다:** `prompt.txt`에 없는 정확한 지연 사이클 수, 핸드셰이크 응답 사이클, 사이클 번호를 정하지 않는다.
+    결과를 알리는 출력 플래그(예: `o_en`, `valid`, `done`, `rdy`)가 있으면 "o_en=1인 사이클의 result는 그 전에 i_en=1로 받은 입력들의
+    결과를 받은 순서대로 낸다"처럼 플래그 기준으로 쓰고, 지연은 "구현에 따름(검증하지 않음)"으로 둔다. "여러 단의 레지스터"처럼
+    수를 정하지 않은 표현을 특정 사이클 수로 바꾸지 않는다: 지어낸 값은 그와 다른 지연을 가진 맞는 설계를 실패시킨다.
 - 7절 (`## 7. 예외와 코너 케이스`): `- EXC-01 (필수) ...` 형식으로 리셋 인가 시 모든 출력 포트의 초기값과 경계 조건 동작을 한 줄에 한 문장씩 명시한다.
+  - `tables.md` 2절에서 리셋 포트가 `없음`인 도메인의 출력에는 초기값(시뮬레이션 시작 값)을 쓰지 않는다. `prompt.txt`가 initial 문이나
+    초기값을 말해도 그렇다: 파이프라인은 initial 문을 쓸 수 없어 보장할 수 없다. 첫 값이 정해지기 전의 출력은 `- EXC-02 미정의: ...` 형식으로 쓴다
+    (spec_gate `INIT_NO_RESET` 오류).
   - `tables.md` 2절에서 리셋 동기가 `동기`인 도메인은 "리셋이 걸린 그 사이클"이 아니라 "리셋 신호를 본 다음 사이클부터 출력이 초기화된다"라고 쓴다.
-  - `tables.md` 2절에 서로 다른 클럭의 리셋 포트가 2개 이상(예: `wrstn`, `rrstn` 또는 `arstn`, `brstn`) 있으면, 모든 리셋 포트 이름을 한 문장에 넣어 "모든 리셋(<포트 이름들>)을 함께, 가장 느린 클럭 4사이클 이상 건다."라는 필수 요구사항 문장과 한쪽만 리셋했을 때의 미정의(`(미정의)`) 문장을 반드시 포함한다.
+  - `tables.md` 2절에 서로 다른 클럭의 리셋 포트가 2개 이상(예: `wrstn`, `rrstn` 또는 `arstn`, `brstn`) 있으면, 모든 리셋 포트 이름을 한 문장에 넣어 "모든 리셋(<포트 이름들>)을 함께, 가장 느린 클럭 4사이클 이상 건다."라는 필수 요구사항 문장과 한쪽만 리셋했을 때의 미정의 문장(`- EXC-02 미정의: ...` 형식)을 반드시 포함한다.
 - **조합 블록:** `tables.md` 2절이 도메인 "없음", 도메인 간 관계 "조합 블록"인 행 하나뿐이면 클럭과 리셋이 없는 조합 블록이다.
   6절에는 클럭 지연 대신 "출력은 레지스터를 거치지 않는 입력의 조합 함수다." 같은 문장을 쓰고, 7절에는 리셋 문장 없이
   경계 입력(최댓값, 0, 넘침, 0으로 나누기 등)의 출력만 쓴다. 사이클, 클럭 에지, 리셋, 초기값이라는 말을 쓰지 않는다.
@@ -62,7 +69,7 @@ python3 tools/pl.py spec_gate {out} --tables tables.md --top {top}
 
 ## 규칙
 - `{out}` 외의 파일은 만들거나 고치지 않는다.
-- 요구사항 줄은 반드시 `- <ID> (필수) <문장>` 형식을 지킨다 (괄호 안 의무 수준 필수).
+- 요구사항 줄은 반드시 `- <ID> (필수) <문장>` 형식을 지킨다 (괄호 안 의무 수준 필수). 미정의는 `- <ID> 미정의: <문장>`으로 쓴다.
 """
 
 
@@ -144,23 +151,27 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
         return clk_edge, "high", False
 
     rl = re.escape(rst_port.lower())
+    # else if (rst == 0) 같은 비활성 분기 문구는 제거한 뒤 극성 판별
+    cleaned_combined = re.sub(rf"else\s+if\s*\(\s*{rl}\s*==\s*(?:1'b)?0\s*\)", "", combined)
     # 리셋 극성
     rst_low_name = bool(re.search(r"(_n|n)$", rst_port, re.I)) and not rst_port.lower().endswith("en")
     explicit_low = bool(
         re.search(
-            rf"active[- ]low|low[- ]active|[!~]\s*{rl}\b|negedge\s+{rl}\b|\b{rl}\s*(?:is|==|=)\s*(?:1'b)?0\b|(?:reset|rst)\s*\({rl}\)\s*(?:signal\s*)?is\s*low|극성\s*\|\s*low|저활성",
-            combined,
+            rf"active[- ]low|low[- ]active|[!~]\s*{rl}\b|negedge\s+{rl}\b|\bif\s*\(\s*{rl}\s*==\s*(?:1'b)?0\s*\)|극성\s*\|\s*low|저활성",
+            cleaned_combined,
         )
     )
     explicit_high = bool(
         re.search(
-            rf"active[- ]high|high[- ]active|posedge\s+{rl}\b|\b{rl}\s*(?:is|==|=)\s*(?:1'b)?1\b|\bif\s*\(\s*{rl}\s*\)|(?:reset|rst)\s*\({rl}\)\s*(?:signal\s*)?is\s*high|극성\s*\|\s*high|고활성",
-            combined,
+            rf"active[- ]high|high[- ]active|posedge\s+{rl}\b|\bif\s*\(\s*{rl}\s*(?:==\s*(?:1'b)?1)?\s*\)|(?:reset|rst)\s*\({rl}\)\s*(?:signal\s*)?is\s*high|극성\s*\|\s*high|고활성",
+            cleaned_combined,
         )
     )
     if explicit_high and not explicit_low:
         active = "high"
-    elif explicit_low or rst_low_name:
+    elif explicit_low and not explicit_high:
+        active = "low"
+    elif rst_low_name:
         active = "low"
     else:
         active = "high"
