@@ -10,6 +10,7 @@
 - 리셋 문장(경고): 동기 리셋 도메인에서 "리셋이 1인 동안/사이클에 출력이 ~"처럼 리셋이 걸린 그 사이클을 요구하는 문장
   (P8 CRC-E01, P8a COBS-E01·AFIFO-E02: 레지스터 출력은 리셋을 본 다음 사이클에야 바뀜). 리셋 도메인이 둘 이상(다른
   클럭)인데 모든 리셋을 함께 거는 사용 조건 문장이 없음 (P11 axis_async_fifo: 한쪽 리셋 동작은 두 클럭 위상에 따라 달라짐)
+- 리셋 없는 도메인(오류): 그 도메인의 출력에 초기값을 정한 문장 (RTLLM right_shifter: IR에 initial이 없어 만족할 수 없음)
 - 레지스터 맵을 주면 레지스터 검사와 SPEC 대조 (`regmap.py`)
 검토 항목으로 올리는 것: 미정의 동작(7번 섹션의 "미정의"), 열린 질문(10번 섹션), 위 검사의 경고,
 LLM 검사의 질문(`--llm`, llm_check.py)
@@ -29,6 +30,7 @@ from pipeline.spec.parse import TEMPLATE, Spec, load
 
 PROTOCOLS = {"valid_ready"}   # 임시 표준 (experiments/p0/substitutes.md). 사내 목록을 받으면 바꿈
 LEVELS = {"필수", "권장", "허용", "미정의"}
+INIT_WORDS = re.compile(r"초기\s*(?:값|상태|화\s*시점)|초깃값|시뮬레이션\s*시작|전원\s*인가|power[- ]on|\binitial\b", re.I)
 
 
 def _word(name: str) -> re.Pattern:
@@ -151,6 +153,16 @@ def check_resets(spec: Spec, ir: dict | None) -> list[SpecIssue]:
                 out.append(SpecIssue("RESET_SAME_CYCLE", "warning", f"{f}:{r.line}",
                                      f"{r.id}: 동기 리셋({port})이 걸린 그 사이클의 출력을 정함. 레지스터 출력은 리셋을 본 다음 "
                                      f"사이클부터 바뀌므로 \"{port}={act}을 본 다음 사이클부터\"처럼 쓴다"))
+    # 리셋 없는 도메인의 출력에 초기값을 요구하는 문장: IR에는 initial이 없고 시뮬레이터는 초기값을 무작위로 두므로
+    # 어떤 RTL도 만족할 수 없다 (RTLLM right_shifter, square_wave)
+    norst = {d["name"] for d in ir["domains"] if not d.get("reset")}
+    outs = [s["name"] for p in ir["ports"] for s in (p["signals"] if "bundle" in p else [p])
+            if s["dir"] == "output" and (s.get("domain") or p.get("domain")) in norst]
+    for r in reqs:
+        if INIT_WORDS.search(r.text) and (hit := [o for o in outs if _word(o).search(r.text)]):
+            out.append(SpecIssue("INIT_NO_RESET", "error", f"{f}:{r.line}",
+                                 f"{r.id}: 리셋이 없는 도메인의 출력({', '.join(hit)})에 초기값을 정함. 리셋 없이는 초기값을 "
+                                 "보장할 수 없으므로(initial 문 금지) 리셋을 두거나, 첫 값이 정해지기 전 출력을 '미정의'로 쓴다"))
     clocks = {d["clock"] for d in rdoms}
     ports = sorted({d["reset"]["port"] for d in rdoms})
     if len(clocks) > 1 and len(ports) > 1 and not any(

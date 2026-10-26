@@ -32,6 +32,19 @@ def test_task_rejects_writes_outside_scope(tmp_path):
     assert not r.ok and r.violations == ["수정: input.txt"]
 
 
+def test_snapshot_ignores_simulator_build_outputs(tmp_path):
+    """에이전트가 돌린 시뮬레이터의 빌드 산출물은 쓰기 범위 위반이 아니다 (RTLLM adder_pipe_64bit)."""
+    from pipeline.agents.runner import scope_violations, snapshot
+
+    (tmp_path / "ir.json").write_text("{}")
+    before = snapshot(tmp_path, ("out/",))
+    for rel in ("build/sim/Vtop.cpp", "obj_dir/Vtop.mk", "sim_build/x.o", "results.xml"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    (tmp_path / "notes.txt").write_text("x")
+    assert scope_violations(before, snapshot(tmp_path, ("out/",))) == ["추가: notes.txt"]
+
+
 def test_task_retries_with_check_errors(tmp_path):
     def check(work):
         return [] if (work / "out" / "result.txt").read_text() == "good" else ["결과가 bad임"]

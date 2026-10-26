@@ -60,6 +60,10 @@ async def pyequiv(dut):
         root, div = top.clock_root(d)
         ports.setdefault(dd["clock"], (root, div, [], []))[3 if dd["edge"] == "neg" else 2].append(d)
 
+    # 리셋은 비활성으로 시작한다. 2-state RTL에서 처음부터 활성 값이면 에지가 없어 비동기 리셋이 동작하지 않는다
+    # (RTLLM traffic_light: 리셋값 10인 레지스터가 첫 클럭 전까지 0이라 설계 모델과 다르다고 나옴)
+    for n, (act, _) in resets.items():
+        getattr(dut, n).value = 1 - act
     mismatch = None
     t0, now, cyc = 0, 0, {r: 0 for r in groups}
     for phase in cfg["phases"]:

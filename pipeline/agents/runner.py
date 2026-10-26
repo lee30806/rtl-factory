@@ -113,12 +113,18 @@ def run_agent(cfg: AgentConfig, workdir: Path, task: str, extra: dict[str, str] 
     return AgentRun(rc, timed_out, time.monotonic() - t0, out[-4000:], err[-4000:])
 
 
+# 에이전트가 시뮬레이터를 돌리면 생기는 빌드 산출물. 결과로 가져가지 않으므로 쓰기 범위 검사에서 뺀다
+# (RTLLM adder_pipe_64bit: Repair가 build/sim/Vtop.cpp를 만들어 쓰기 범위 위반으로 실패)
+BUILD_OUTPUTS = ("obj_dir/", "sim_build/", "build/", "results.xml")
+
+
 def snapshot(root: Path, exclude: tuple[str, ...]) -> dict[str, str]:
-    """root 아래 파일의 해시. exclude로 시작하는 상대 경로와 숨김 최상위 항목은 뺀다."""
+    """root 아래 파일의 해시. exclude로 시작하는 상대 경로, 빌드 산출물, 숨김 최상위 항목은 뺀다."""
     out = {}
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root).as_posix()
-        if not p.is_file() or rel.startswith(exclude) or rel.split("/")[0].startswith(".") or "__pycache__" in rel:
+        if (not p.is_file() or rel.startswith(exclude) or rel.startswith(BUILD_OUTPUTS)
+                or rel.split("/")[0].startswith(".") or "__pycache__" in rel):
             continue
         out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
     return out

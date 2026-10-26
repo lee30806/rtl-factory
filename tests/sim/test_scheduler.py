@@ -473,6 +473,25 @@ def test_skeleton_lint_error_stops_as_generator_bug(tmp_path, monkeypatch):
     assert "Repair" not in _calls(tmp_path)
 
 
+def test_fragment_lint_warning_goes_to_repair_not_tb_error(tmp_path):
+    """조각의 lint 경고(WIDTHTRUNC)는 E2 빌드도 멈춘다. TB 실행 오류로 멈추지 않고 Repair가 고친다 (RTLLM multi_16bit)."""
+    f = _files(tmp_path)
+    core = json.loads(f["Author"]["out/axis_adapter_core.ir.json"])
+    k = next(b for b in core["blocks"] if b["id"] == "k_ports")
+    good = k["body"]
+    first, rest = good.split("\n", 1)
+    # 인덱스 폭이 남는 비트 선택 (Verilator WIDTHTRUNC). 뒤의 대입이 덮어쓰므로 동작은 같고 경고만 남는다
+    k["body"] = f"{first}\ns_axis_tready = s_axis_tkeep[{{8'd0, s_axis_tvalid_reg}}];\n{rest}"
+    f["Author"] = {"out/axis_adapter_core.ir.json": json.dumps(core)}
+    f["Repair"] = {"out/patches.json": json.dumps([{"op": "set", "target": "blocks/k_ports", "field": "body", "value": good}])}
+    rep = Run(tmp_path / "run", SPEC, _roles(tmp_path, f), isolate=False).execute()
+    assert rep["status"] == "pass", json.dumps(rep, ensure_ascii=False)[:3000]
+    assert "TB_ERROR" not in {r["code"] for r in rep["review"]}
+    assert _calls(tmp_path).count("Repair") == 2   # 후보마다 한 번
+    v0 = tmp_path / "run" / "verify" / "axis_adapter_core_c0_r0"
+    assert not (v0 / "sim_v0").exists()   # lint를 고치기 전에는 E2를 돌리지 않음
+
+
 def _files_repeat(tmp_path, verdict):
     """두 Verifier 모두 같은 틀린 속성으로 실패하고, Repair는 매번 다른 (효과 없는) patch를 냄. 두 번 뒤 Arbiter가 판정."""
     f = _files_wrong_v1(tmp_path)
@@ -512,6 +531,8 @@ def test_repeated_failure_rtl_wrong_keeps_repairing(tmp_path):
     assert rep["status"] == "failed"
     assert all("Repair 상한" in (c["reason"] or "") for c in rep["candidates"].values())
     assert _calls(tmp_path).count("Arbiter|__repeat__") == 4   # 같은 실패는 한 번만 판정
+    best = [r for r in rep["review"] if r["code"] == "BEST_REVISION"]   # 실패한 테스트가 가장 적었던 리비전을 남김
+    assert len(best) == 2 and all(r["where"].endswith("/rtl") and "_r0" in r["message"] for r in best), best
 
 
 def test_lead_pinned_repair_that_regresses_is_rolled_back(tmp_path):

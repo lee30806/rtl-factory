@@ -315,6 +315,77 @@ def test_multi_clock_reset_usage_condition_is_required():
     assert _reset_codes(ok) == []
 
 
+NORESET_SPEC = """# sh8 SPEC
+
+## 1. 목적과 범위
+
+`sh8`은 리셋이 없는 8비트 오른쪽 시프트 레지스터입니다.
+
+## 2. 클럭, 리셋, 전력
+
+| 도메인 | 클럭 포트 | 주파수 | 리셋 포트 | 리셋 극성 | 리셋 동기 | 도메인 간 관계 | 전력 도메인 | isolation | retention |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| sys | clk | 100 MHz | 없음 | – | – | 단일 | 없음 | 없음 | 없음 |
+
+## 3. 인터페이스
+
+| 포트 또는 번들 | 방향 | 타입 | 프로토콜 태그 | 도메인 |
+| --- | --- | --- | --- | --- |
+| clk | input | logic | – | sys |
+| d | input | logic | – | sys |
+| q | output | logic [7:0] | – | sys |
+
+## 4. 파라미터
+
+| 이름 | 타입 | 기본값 | 허용 범위 |
+| --- | --- | --- | --- |
+
+## 5. 기능 요구사항
+
+- SH-01 (필수) clk 상승 에지마다 q는 {d, q[7:1]}이 된다.
+- SH-02 (필수) q의 초기값은 8'h00이다.
+
+## 6. 타이밍과 성능
+
+- SH-T01 (필수) q는 레지스터 출력이다.
+
+## 7. 예외와 코너 케이스
+
+- SH-E01 미정의: 처음 8사이클 동안 d로 채워지지 않은 q의 비트.
+
+## 8. 예시 시나리오
+
+### SC-01 정상: 1 넣기
+
+| 입력 | 기대 출력 |
+| --- | --- |
+| 사이클 0~7에 d=1 | 사이클 7에 q=8'hFF |
+
+### SC-02 코너: 0 넣기
+
+| 입력 | 기대 출력 |
+| --- | --- |
+| 사이클 0~7에 d=0 | 사이클 7에 q=8'h00 |
+
+## 9. 구현 제약
+
+- 리셋 포트를 두지 않는다.
+
+## 10. 열린 질문
+
+- 없음
+"""
+
+
+def test_initial_value_without_reset_is_an_error():
+    """리셋 없는 도메인의 출력에 초기값을 정하면 어떤 RTL도 만족할 수 없다 (RTLLM right_shifter, square_wave)."""
+    res = check_run(parse(NORESET_SPEC))
+    hit = [i for i in res["issues"] if i["code"] == "INIT_NO_RESET"]
+    assert len(hit) == 1 and "SH-02" in hit[0]["message"] and res["gate"] == "fail"
+    ok = check_run(parse(NORESET_SPEC.replace("- SH-02 (필수) q의 초기값은 8'h00이다.\n", "")))
+    assert not [i for i in ok["issues"] if i["code"] == "INIT_NO_RESET"] and ok["gate"] == "pass", ok["issues"]
+
+
 def test_spec_l1_with_inout_passes_gate_without_tristate_block():
     """SPEC 표에서 만든 L1에는 블록이 없으므로 "inout은 tristate 블록 하나가 맡음"(V2)을 SPEC 게이트에서 보지 않는다
     (2026-10-22 od_top: SpecWriter의 맞는 SPEC이 이 규칙으로 실패)."""

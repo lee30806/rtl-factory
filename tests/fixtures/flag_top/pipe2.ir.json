@@ -1,0 +1,20 @@
+{
+ "module": "pipe2",
+ "role": "module",
+ "domains": [{"name": "sys", "clock": "clk", "edge": "pos", "reset": {"port": "rst_n", "active": "low", "async": true}}],
+ "ports": [
+  {"name": "i_en", "dir": "input", "type": "logic", "domain": "sys"},
+  {"name": "a", "dir": "input", "type": "logic [7:0]", "domain": "sys"},
+  {"name": "b", "dir": "input", "type": "logic [7:0]", "domain": "sys"},
+  {"name": "o_en", "dir": "output", "type": "logic", "domain": "sys", "kind": "reg", "reset": "1'b0"},
+  {"name": "sum", "dir": "output", "type": "logic [8:0]", "domain": "sys", "kind": "reg", "reset": "'0"}
+ ],
+ "signals": [
+  {"name": "v1", "kind": "reg", "type": "logic", "domain": "sys", "reset": "1'b0"},
+  {"name": "s1", "kind": "reg", "type": "logic [8:0]", "domain": "sys", "reset": "'0"}
+ ],
+ "blocks": [
+  {"id": "k_pipe", "kind": "seq", "domain": "sys", "reads": ["i_en", "a", "b", "v1", "s1"], "writes": ["v1", "s1", "o_en", "sum"],
+   "body": "v1 <= i_en;\ns1 <= {1'b0, a} + {1'b0, b};\no_en <= v1;\nsum <= s1;"}
+ ]
+}

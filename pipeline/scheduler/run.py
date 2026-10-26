@@ -553,10 +553,13 @@ class Run:
             maps[n] = e.sourcemap
         roles = {n: m.role for n, m in mods.items()}
         e1 = lint(files, top)
+        e1c = classify_findings(e1.findings, maps, roles)
+        # 조각의 lint 오류는 Repair가 먼저 고친다. 경고도 Verilator 빌드를 멈추므로 E2와 번역기 검사를 돌리면
+        # 빌드 실패가 TB 실행 오류나 생성기 버그로 잘못 분류된다 (RTLLM multi_16bit WIDTHTRUNC)
+        frag_lint = any(c.type == "lint_fragment" for c in e1c)
         # 번역기 검사: Python 조각 모듈의 설계 모델과 방출한 RTL이 같은 무작위 자극에서 같은 출력을 내는지 (SPEC 해석은 보지 않음)
         py_equiv = [{"module": n, **pyequiv.check(n, mods, files, out / f"pyequiv_{n}")}
-                    for n, m in mods.items() if m.lang == "py" and py_check]
-        e1c = classify_findings(e1.findings, maps, roles)
+                    for n, m in mods.items() if m.lang == "py" and py_check and not frag_lint]
         top_m = mods[top]
         hdir, tdir = out / "harness", out / "verify_only"
         hdir.mkdir(exist_ok=True)
@@ -565,7 +568,7 @@ class Run:
         (tdir / f"{top}_trace.json").write_text(json.dumps(trace_names(top_m, mods)), encoding="utf-8")
         e2 = []
         pads, sim_top = pad_top(top_m.raw, out / "pad")   # inout Block Top은 패드 래퍼를 top으로
-        for k, tb in enumerate(tbs):
+        for k, tb in enumerate([] if frag_lint else tbs):
             r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
                     trace=tdir / f"{top}_trace.json")
             res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
@@ -764,6 +767,11 @@ class Run:
                 break
             failed = [x for x in vres["e2"] if not x["ok"]]
             nfail = sum(len({f["test"] for f in x["findings"] if f["test"]}) or 1 for x in failed)
+            # 실패한 테스트가 가장 적었던 리비전: 끝까지 통과하지 못하면 사람이 볼 후보로 남긴다 (Repair가 나중 리비전을
+            # 망가뜨리는 경우. RTLLM freq_divbyeven은 r0가 외부 정답 TB를 통과했고 r3는 실패)
+            best = sts[mods[0]].get("best")
+            if vres["e2"] and (best is None or nfail < best["fail"]):
+                save_all(best={"fail": nfail, "verify": vtag})
             # lead가 지정한 Repair 뒤 실패한 테스트가 늘면 그 Repair를 되돌리고 lead에게 다시 묻는다 (P8a async_fifo)
             undo = next(((m, sts[m]["undo"]) for m in mods if sts[m].get("undo")), None)
             for m in mods:
@@ -908,7 +916,7 @@ class Run:
             list(ex.map(lambda c: self.candidate_loop(c, mods, tree, tbs), range(n)))
         allst = self.modules()
         with self.lock:   # 이전 실행(승인 대기 등)에서 남은 결과는 이번 판정으로 바꾼다
-            self.state["review"] = [r for r in self.state["review"] if r["code"] != "MODULE_FAILED"]
+            self.state["review"] = [r for r in self.state["review"] if r["code"] not in ("MODULE_FAILED", "BEST_REVISION")]
         # 묶음 c는 모든 모듈의 c번 후보가 함께 통과해야 쓸 수 있다
         ok = sorted([(sum(allst[f"{m}/c{c}"]["repairs"] for m in mods), sum(allst[f"{m}/c{c}"].get("lint", 0) for m in mods), c)
                      for c in range(n) if all(allst[f"{m}/c{c}"]["status"] == "pass" for m in mods)])
@@ -917,6 +925,10 @@ class Run:
             for m in mods:
                 self.review("MODULE_FAILED", f"{m}: 통과한 후보가 없음 "
                                              f"({[allst[f'{m}/c{c}'].get('reason') or allst[f'{m}/c{c}']['status'] for c in range(n)]})", m)
+            for c in range(n):
+                if (b := allst[f"{mods[0]}/c{c}"].get("best")) and allst[f"{mods[0]}/c{c}"]["status"] != "waiting_approval":
+                    self.review("BEST_REVISION", f"{', '.join(mods)} 후보 {c}: 실패한 테스트가 가장 적었던 리비전 {b['verify']} "
+                                                 f"({b['fail']}개)", str(self.dir / "verify" / b["verify"] / "rtl"))
         else:
             chosen = {m: ok[0][2] for m in mods}
             passed = [c for _, _, c in ok]

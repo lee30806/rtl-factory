@@ -26,6 +26,14 @@ inout 포트(`pads`, 패드 모델 포트 P_pad_o/P_pad_oe/P_pad_val)는 패드 
 구동하지 않고(P_pad_oe=0) 풀업에 맡긴다.
 추가 동기 리셋(`extra_resets`)은 시작할 때 풀어 두고, 테스트가 걸면 주 리셋처럼 그 도메인의 입력 큐를 비운다.
 
+번들이 없는 블록(단독 포트만)의 도우미 (지연을 사이클로 고정하지 않고 비교하기 위해)
+- valid 플래그 스트림(`flag_input`, `flag_output`): 단독 valid 포트가 1인 사이클의 data 포트 값을 트랜잭션 하나로 본다.
+  입력은 참조 모델의 `on_input`으로, 출력은 스코어보드로 가므로 지연과 상관없이 순서대로 비교한다.
+- 입력 열(`drive`): 단독 입력에 사이클마다 넣을 값을 큐에 넣는다. 하니스가 그 도메인의 입력 에지에서 하나씩 넣으므로
+  `start()` 바로 뒤에 넣은 첫 값은 사이클 0의 값이다 (테스트가 직접 에지를 기다려 바꾸면 첫 비트를 덮어쓰기 쉬움).
+- 속성 표본의 `__reset__`: 그 도메인의 리셋이 표본 시점에 걸려 있거나 직전 표본 뒤에 한 번이라도 걸렸으면 1. 사이클 중간에
+  건 비동기 리셋도 잡으므로, 직전 값을 기억하는 속성은 이 값이 1이면 기준을 다시 잡는다.
+
 Verify 툴은 환경 변수로 결과 위치를 준다.
   TB_OUT    결과 디렉터리. 첫 불일치(mismatch.json), 트레이스(trace.json)를 쓴다.
   TB_TRACE  트레이스할 내부 신호 목록(JSON). Verifier는 이 파일을 보지 못한다.
@@ -39,7 +47,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
+from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge, ValueChange
 
 
 def _handle(dut, name: str):
@@ -281,6 +289,18 @@ class Scoreboard:
             self.first = rec
 
 
+class FlagMonitor:
+    """단독 valid 포트가 1인 사이클마다 data 포트 값으로 트랜잭션 하나."""
+
+    def __init__(self, dut, stream: str, valid: str, data: list[str], sink):
+        self.stream, self.sink, self.v = stream, sink, getattr(dut, valid)
+        self.data = {n: getattr(dut, n) for n in data}
+
+    def sample(self, cycle: int) -> None:
+        if _int(self.v) == 1:
+            self.sink(self.stream, {n: _int(h) for n, h in self.data.items()}, cycle, None)
+
+
 class Harness:
     def __init__(self, dut, cfg: dict, model=None, *, name: str):
         self.dut, self.cfg, self.model, self.name = dut, cfg, model, name
@@ -298,6 +318,8 @@ class Harness:
         # 이 테스트가 넣은 자극을 `pl.py refsim` 형식으로 남긴다 (원본에서 실패한 테스트를 SpecWriter가 원본에 다시 넣어 봄)
         self.stim: dict = {"inputs": {}, "valid": {}, "ready": {}, "single": {}, "reset": {}}
         self._waiting: dict[str, list[int]] = {}   # 입력 번들별, 마지막 전송 뒤 valid만 1이던 사이클
+        self.seqs: dict[str, deque] = {}   # 단독 입력 → 사이클마다 넣을 값 (drive)
+        self._rst_seen: dict[str, bool] = {d: False for d in cfg["clocks"]}   # 직전 표본 뒤 리셋이 걸렸는지 (__reset__)
         ins = [b for b in cfg["bundles"] if not b["dut_drives"]]
         outs = [b for b in cfg["bundles"] if b["dut_drives"]]
         for b in ins:
@@ -352,6 +374,13 @@ class Harness:
                 getattr(self.dut, port).value = 1 - active
         for d, (port, active) in self.cfg["resets"].items():
             getattr(self.dut, port).value = active
+        watch: dict[tuple[str, int], list[str]] = {}
+        for d in self.cfg["clocks"]:
+            for port, active in [*([self.cfg["resets"][d]] if d in self.cfg["resets"] else []),
+                                 *self.cfg.get("extra_resets", {}).get(d, [])]:
+                watch.setdefault((port, active), []).append(d)
+        for (port, active), doms in watch.items():
+            cocotb.start_soon(self._watch_reset(port, active, doms))
         for d, (clk, _) in self.cfg["clocks"].items():
             await ClockCycles(getattr(self.dut, clk), reset_cycles)
         # 리셋 풀기와 표본 시작은 뒤에서 한다. start 바로 뒤의 send가 모든 도메인의 사이클 0 전에 큐에 들어가야
@@ -363,6 +392,7 @@ class Harness:
             await self._drive_edge(d)
             if d in self.cfg["resets"]:   # 리셋 없는 도메인은 풀 리셋이 없음
                 getattr(self.dut, self.cfg["resets"][d][0]).value = 1 - self.cfg["resets"][d][1]
+            self._rst_seen[d] = False   # 시작 리셋은 __reset__에 넣지 않는다 (테스트 도중 건 리셋만)
             # 리셋을 푼 바로 그 사이클부터 표본을 읽는다. 리셋이 빠진 레지스터의 초기값이 여기서 보인다(T1).
             cocotb.start_soon(self._loop(d))
 
@@ -388,8 +418,24 @@ class Harness:
         """T2 체커가 이 번들의 전송을 한 번 이상 검사했으면 req(ID 하나나 목록)를 실행된 요구사항으로 센다 (T5)."""
         self.protocol_reqs[bundle] = req
 
+    def flag_input(self, stream: str, valid: str, data: list[str]) -> None:
+        """단독 입력 valid가 1인 사이클마다 data 값으로 참조 모델의 on_input(stream, txn)을 부른다. start() 전에 부른다."""
+        self.samplers[self.cfg["port_domains"][valid]].insert(0, FlagMonitor(self.dut, stream, valid, data, self._on_input))
+
+    def flag_output(self, stream: str, valid: str, data: list[str]) -> None:
+        """단독 출력 valid가 1인 사이클마다 data 값을 stream의 실제 출력으로 스코어보드에 넣는다 (지연과 무관하게 순서대로 비교).
+        start() 전에 부른다. 모델의 streams에 있는 단독 출력은 따로 비교하므로, data 포트는 streams에 넣지 않는다."""
+        mon = FlagMonitor(self.dut, stream, valid, data, self._on_output)
+        self.samplers[self.cfg["port_domains"][valid]].append(mon)
+
+    def drive(self, port: str, values) -> None:
+        """단독 입력 port에 사이클마다 넣을 값을 큐 뒤에 붙인다. 하니스가 그 도메인의 입력 에지마다 하나씩 넣고, 다 넣으면
+        마지막 값을 유지한다. start() 바로 뒤에 부르면 첫 값이 사이클 0의 값이다. drain()은 큐가 빌 때까지도 기다린다."""
+        self.seqs.setdefault(port, deque()).extend(int(v) for v in values)
+
     def add_property(self, name: str, domain: str, fn, req: str | list[str] | None = None) -> None:
-        """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값 (모든 도메인의 리셋 포트 포함, 클럭 제외)."""
+        """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값 (모든 도메인의 리셋 포트 포함, 클럭 제외)과
+        `__reset__` (이 도메인의 리셋이 지금 걸렸거나 직전 표본 뒤에 걸렸으면 1)."""
         self.properties.append((name, domain, fn, req))
 
     async def drain(self, extra: int = 5, timeout: int = 10000) -> None:
@@ -397,7 +443,7 @@ class Harness:
         extra 사이클을 더 돈다. 끝까지 오지 않은 출력은 finish()가 missing으로 보고한다."""
         clk = getattr(self.dut, next(iter(self.cfg["clocks"].values()))[0])
         for _ in range(timeout):
-            if not any(d.busy for d in self.drivers.values()) and not self.sb.pending:
+            if not any(d.busy for d in self.drivers.values()) and not any(self.seqs.values()) and not self.sb.pending:
                 break
             await FallingEdge(clk)
         for d in self.cfg["clocks"]:
@@ -431,6 +477,14 @@ class Harness:
         assert not problems, "; ".join(problems)
 
     # -- 내부 --
+    async def _watch_reset(self, port: str, active: int, domains: list[str]) -> None:
+        h = getattr(self.dut, port)
+        while True:
+            await ValueChange(h)
+            if _int(h) == active:
+                for d in domains:
+                    self._rst_seen[d] = True
+
     def _on_input(self, stream: str, txn: dict, cycle: int, domain: str) -> None:
         self.stim["inputs"].setdefault(stream, []).append(txn)
         if self.model is None:
@@ -455,6 +509,7 @@ class Harness:
         rports = list(dict.fromkeys(p for p, _ in self.cfg["resets"].values()))
         ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + rports + [p for p, _ in extra]
         traced = [n for n, dom in self._trace_names.items() if dom in (domain, None)]
+        seq_ports = [n for n in self.cfg["inputs"] if self.cfg["port_domains"].get(n) == domain]
         first = True
         while True:
             if not first:
@@ -462,6 +517,9 @@ class Harness:
             first = False
             for d in drivers:
                 d.on_falling()
+            for n in seq_ports:
+                if self.seqs.get(n):
+                    getattr(self.dut, n).value = self.seqs[n].popleft()
             await ReadOnly()
             c = self.cycle[domain]
             for d in drivers:
@@ -478,6 +536,7 @@ class Harness:
             self._record_stim(domain, rst, flushed)
             if self.properties:
                 sample = {n: _int(getattr(self.dut, n)) for n in ports}
+                sample["__reset__"] = int(flushed or self._rst_seen[domain])
                 for name, dom, fn, req in self.properties:
                     if dom == domain:
                         self.prop_evals += 1
@@ -487,6 +546,7 @@ class Harness:
             if traced:
                 self.trace.append({"domain": domain, "cycle": c,
                                    "values": {n: _int(_handle(self.dut, n)) for n in traced}})
+            self._rst_seen[domain] = False
             self.cycle[domain] = c + 1
 
     def _record_stim(self, domain: str, rst, flushed: bool) -> None:

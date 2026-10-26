@@ -101,3 +101,13 @@ def test_mid_test_reset_flushes_input_queue(tmp_path):
     r = sim([tmp_path / "pkt_parser.sv"], "pkt_parser", "tb_pkt_parser_reset", HERE, tmp_path / "build", seeds=[1],
             harness_dir=tmp_path, trace=tmp_path / "verify_only" / "pkt_parser_trace.json")
     assert r.ok, r.findings
+
+
+def test_flag_streams_drive_and_reset_flag(tmp_path):
+    """번들이 없는 블록: valid 플래그 스트림은 지연과 무관하게 비교하고, drive의 첫 값은 사이클 0, 사이클 중간 리셋은
+    __reset__으로 보인다 (RTLLM adder_pipe_64bit, sequence_detector, up_down_counter의 Verifier 결함)."""
+    m = Module(json.loads((ROOT / "tests" / "fixtures" / "flag_top" / "pipe2.ir.json").read_text()))
+    (tmp_path / "pipe2.sv").write_text(emit(m).text)
+    (tmp_path / "pipe2_harness.py").write_text(harness_source(m))
+    r = sim([tmp_path / "pipe2.sv"], "pipe2", "tb_pipe2_h", HERE, tmp_path / "build", harness_dir=tmp_path)
+    assert r.ok, r.findings

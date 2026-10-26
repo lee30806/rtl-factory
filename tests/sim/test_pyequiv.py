@@ -123,3 +123,18 @@ def test_instance_output_to_parent_port_and_sibling(tmp_path):
     files = [_emit(tmp_path, top, lib=lib), _emit(tmp_path, thru)]
     assert "u_a_o" not in files[0].read_text()
     assert check("fan", lib, files, tmp_path / "b", cycles=200)["ok"]
+
+
+def test_async_reset_with_nonzero_value_from_time_zero(tmp_path):
+    """비동기 리셋값이 0이 아닌 블록: 처음 거는 리셋이 에지가 되어 RTL도 리셋값을 낸다 (RTLLM traffic_light, freq_divbyodd)."""
+    m = Module({
+        "module": "rst10", "role": "module", "lang": "py",
+        "domains": [{"name": "sys", "clock": "clk", "edge": "pos",
+                     "reset": {"port": "rst_n", "active": "low", "async": True}}],
+        "ports": [{"name": "dec", "dir": "input", "type": "logic", "domain": "sys"},
+                  {"name": "cnt", "dir": "output", "type": "logic [7:0]", "domain": "sys", "kind": "reg",
+                   "reset": "8'd10"}],
+        "blocks": [{"id": "k_cnt", "kind": "seq", "domain": "sys", "body": "if dec:\n    cnt = cnt - 1"}],
+    })
+    res = check("rst10", {"rst10": m}, [_emit(tmp_path, m)], tmp_path / "b", cycles=300)
+    assert res["ok"], res["mismatch"]
