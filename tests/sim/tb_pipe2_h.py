@@ -55,3 +55,23 @@ async def mid_cycle_reset_is_flagged(dut):
     await ClockCycles(dut.clk, 3)
     assert len(flagged) == 1 and flagged[0] > 0, flagged
     h.finish()
+
+
+@cocotb.test()
+async def api_misuse_errors_are_clear(dut):
+    """단독 포트를 번들 API로 다루거나 async 함수를 속성으로 주면 고칠 방법을 담은 오류가 난다."""
+    h = make(dut, Model(), name="api_errors")
+    for call, kind, hint in [(lambda: h.send("op", {"a": 1}), KeyError, "h.drive"),
+                             (lambda: h.set_ready("res", [1]), KeyError, "flag_output"),
+                             (lambda: h.add_property("p", "nope", lambda s, c: None), ValueError, "sys"),
+                             (lambda: h.add_property("p", "sys", _async_prop), TypeError, "async")]:
+        try:
+            call()
+        except kind as e:
+            assert hint in str(e), str(e)
+        else:
+            raise AssertionError(f"{kind.__name__}가 나지 않음")
+
+
+async def _async_prop(s, c):
+    return None

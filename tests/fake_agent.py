@@ -44,6 +44,11 @@ elif mode == "task_write":
 elif mode == "task_escape":
     (cwd / "out" / "result.txt").write_text("done")
     (cwd / "input.txt").write_text("changed")
+elif mode == "task_escape_once":   # 첫 시도에만 입력을 고치고 쓰기 범위 밖에 파일을 만듦
+    (cwd / "out" / "result.txt").write_text("done")
+    if "이전 시도의 검사 결과" not in (cwd / "TASK.md").read_text():
+        (cwd / "input.txt").write_text("changed")
+        (cwd / "notes.txt").write_text("x")
 elif mode == "task_retry":
     good = "이전 시도의 검사 결과" in (cwd / "TASK.md").read_text()
     (cwd / "out" / "result.txt").write_text("good" if good else "bad")

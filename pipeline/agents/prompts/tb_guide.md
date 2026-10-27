@@ -16,7 +16,7 @@ class Model:
 @cocotb.test()
 async def basic(dut):
     h = make(dut, Model(), name="basic")  # name은 테스트마다 달라야 한다
-    h.add_property("이름", "<도메인>", lambda s, cycle: None if 조건 else "실패 사유", "REQ-ID")   # s: 그 도메인의 L1 포트 값 dict (모든 도메인의 리셋 포트 포함, 클럭 제외)
+    h.add_property("이름", "<도메인>", lambda s, cycle: None if 조건 else "실패 사유", "REQ-ID")   # s: L1 포트 값 dict (모든 도메인의 포트, 클럭 제외). fn은 보통 함수 (async 금지)
     h.cover_protocol("m_axis", "REQ-ID")   # valid/ready 규칙 체커가 이 번들을 검사하면 그 요구사항을 실행한 것으로 셈
     h.set_ready("m_axis", [1, 0, 1])       # 출력 번들의 ready 패턴 (backpressure). 패턴은 끝나면 처음부터 되풀이한다
     h.set_ready("m_axis", [0] * 100, then=1)   # 처음 100사이클만 막고 그 뒤로 계속 받기 (then 값을 유지)
@@ -27,6 +27,8 @@ async def basic(dut):
     h.finish()                            # 불일치, 프로토콜 위반, 속성 위반이 있으면 AssertionError
 ```
 
+- `send`는 입력 valid_ready 번들, `set_ready`와 `allow_overwrite`는 출력 valid_ready 번들 이름만 받는다. 번들이 없는 블록에서는
+  쓰지 않는다 (단독 포트는 아래 도우미나 `dut.<포트>.value`). 없는 이름을 넘기면 툴 검사가 테스트를 돌려보낸다.
 - 사이클 번호는 리셋이 풀린 첫 사이클을 0으로 센다 (도메인마다 자기 클럭). `await h.start()` 바로 뒤에 넣은 첫 전송은 `idle=N`이면 사이클 N에 valid=1로 나간다 (idle=0이면 사이클 0). 그 뒤 전송의 idle은 앞 전송이 받힌 다음 사이클부터 센다: 사이클 c에 받히면 다음 전송은 사이클 c+1+N에 나간다.
 - 기대 출력과 실제 출력은 순서대로 비교한다. 출력이 기대보다 먼저 와도 된다 (프레임 끝에서야 기대를 알 수 있는 모델).
 - 1비트 단독 출력은 1인 사이클마다, 여러 비트 단독 출력은 값이 바뀔 때마다 트랜잭션 하나가 된다.
@@ -71,6 +73,8 @@ async def basic(dut):
   오류). 루프 안에서 읽었으면 다음 반복은 `await FallingEdge(...)`나 `RisingEdge`로 시간을 보낸 뒤 읽는다.
 - **첫 입력을 덮어씀.** 값을 넣고 바로 `await FallingEdge`한 뒤 다음 값을 넣으면 하니스가 리셋을 푸는 그 에지에서 첫 값이 덮여
   DUT가 받지 못한다. 단독 입력 열은 `h.drive`로 넣는다.
+- **SPEC이 미정의로 둔 값을 검사.** 리셋이 없는 레지스터의 초기값, 아직 입력으로 채워지지 않은 비트처럼 SPEC이 "미정의"로 둔 값은
+  기대값을 만들지 않는다. 그 값이 정해진 뒤(예: 폭만큼 입력을 넣은 뒤)부터 검사하거나, 정해진 비트만 비교한다.
 - **SPEC이 정하지 않은 지연을 고정.** "결과는 o_en=1일 때 유효"처럼 지연을 정하지 않았으면 `flag_output`으로 순서만 비교한다.
   SPEC이 정한 지연만 사이클로 검사한다.
 - **직전 사이클 값으로 같은 사이클 규칙 검사.** "일시정지(ack=1) 동안 valid=0"은 같은 표본의 ack와 valid로 본다. 직전 표본의 ack를

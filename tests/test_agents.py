@@ -1,5 +1,6 @@
 """P4: 작업 실행기, 역할 설정, 에이전트 도구 CLI."""
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +44,30 @@ def test_snapshot_ignores_simulator_build_outputs(tmp_path):
         (tmp_path / rel).write_text("x")
     (tmp_path / "notes.txt").write_text("x")
     assert scope_violations(before, snapshot(tmp_path, ("out/",))) == ["추가: notes.txt"]
+
+
+def test_verifier_check_rejects_harness_api_misuse():
+    """번들이 없는 블록에서 h.send/h.set_ready에 단독 포트 이름을 넘기면 시뮬레이션 전에 Verifier 재시도로 돌린다."""
+    import ast
+    from pipeline.agents.verifier import api_misuse
+
+    l1 = json.loads((ROOT / "tests" / "fixtures" / "flag_top" / "pipe2.ir.json").read_text())
+    good = (ROOT / "tests" / "sim" / "tb_pipe2_h.py").read_text().split("@cocotb.test()\nasync def api_misuse")[0]
+    assert api_misuse(ast.parse(good), l1) == []
+    bad = good + '\nh.send("op", {"a": 1})\nh.set_ready("sum", [1])\nh.flag_output("r", "o_en", ["nope"])\nh.add_property("x", "clk", f)\n'
+    errs = api_misuse(ast.parse(bad), l1)
+    assert [re.search(r"h\.\w+\('[^']*'\)", e).group(0) for e in errs] == [
+        "h.send('op')", "h.set_ready('sum')", "h.flag_output('nope')", "h.add_property('clk')"], errs
+
+
+def test_task_restores_stray_writes_and_retries(tmp_path):
+    """입력 파일을 고치거나 범위 밖에 파일을 만든 시도는 되돌리고 오류를 붙여 다시 시킨다 (재시도가 남았을 때만)."""
+    r = run_task(_cfg("task_escape_once"), _task(), tmp_path / "w", retries=1)
+    assert r.ok and r.attempts == 2 and r.violations == [], r
+    assert any("쓰기 범위 밖 변경 (되돌림): 수정: input.txt" in e for e in r.runs[0]["errors"])
+    assert (tmp_path / "w" / "input.txt").read_text() == "원본" and not (tmp_path / "w" / "notes.txt").exists()
+    r = run_task(_cfg("task_escape"), _task(), tmp_path / "w2", retries=1)   # 계속 고치면 마지막 시도의 위반으로 실패
+    assert not r.ok and r.attempts == 2 and r.violations == ["수정: input.txt"]
 
 
 def test_task_retries_with_check_errors(tmp_path):

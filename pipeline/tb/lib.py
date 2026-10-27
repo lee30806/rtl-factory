@@ -40,6 +40,7 @@ Verify 툴은 환경 변수로 결과 위치를 준다.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from collections import deque
@@ -396,14 +397,23 @@ class Harness:
             # 리셋을 푼 바로 그 사이클부터 표본을 읽는다. 리셋이 빠진 레지스터의 초기값이 여기서 보인다(T1).
             cocotb.start_soon(self._loop(d))
 
+    def _driver(self, bundle: str, dut_drives: bool, api: str):
+        """번들 이름의 드라이버. 없는 이름이면 고칠 방법을 담은 오류 (단독 포트를 번들 API로 다루려는 실수가 잦음)."""
+        names = [b["name"] for b in self.cfg["bundles"] if b["dut_drives"] == dut_drives]
+        if bundle not in names:
+            kind = "출력" if dut_drives else "입력"
+            raise KeyError(f"h.{api}({bundle!r}): {kind} valid_ready 번들이 아님 ({kind} 번들: {', '.join(names) or '없음'}). "
+                           "단독 포트는 h.drive(입력 열), h.flag_input/h.flag_output(valid 플래그 스트림), dut.<포트>.value로 다룬다")
+        return self.drivers[bundle]
+
     def send(self, bundle: str, txn: dict, idle: int = 0) -> None:
-        self.drivers[bundle].send(txn, idle)
+        self._driver(bundle, False, "send").send(txn, idle)
 
     def set_ready(self, bundle: str, pattern, then: int | None = None) -> None:
         """출력 번들의 ready. pattern은 끝나면 처음부터 되풀이한다. then을 주면 pattern을 한 번만 쓰고 then 값을 유지한다
         (예: 처음 1500사이클 막았다가 계속 받기: `set_ready(b, [0] * 1500, then=1)`). P8a async_fifo: Verifier 둘이
         `[0] * 1500 + [1]`을 "막았다가 계속 받기"로 써서, 1501사이클에 한 번만 받는 테스트가 됨."""
-        d = self.drivers[bundle]
+        d = self._driver(bundle, True, "set_ready")
         d.pattern, d.then, d.i = list(pattern), then, 0
 
     def allow_overwrite(self, bundle: str) -> None:
@@ -411,7 +421,7 @@ class Harness:
         계속 본다). SPEC이 아직 받지 않은 값을 새 값으로 덮어쓰도록 정한 번들에만 쓴다 (예: UART 수신 overrun, P11 uart R6)."""
         c = next((c for c in self.checkers if isinstance(c, ValidReadyChecker) and c.name == bundle), None)
         if c is None:
-            raise KeyError(f"DUT가 내는 valid_ready 번들이 아님: {bundle}")
+            self._driver(bundle, True, "allow_overwrite")
         c.overwrite_ok = True
 
     def cover_protocol(self, bundle: str, req: str | list[str]) -> None:
@@ -435,7 +445,12 @@ class Harness:
 
     def add_property(self, name: str, domain: str, fn, req: str | list[str] | None = None) -> None:
         """T4. fn(sample: dict[str, int], cycle) -> None 또는 실패 사유 문자열. sample은 L1 포트 값 (모든 도메인의 리셋 포트 포함, 클럭 제외)과
-        `__reset__` (이 도메인의 리셋이 지금 걸렸거나 직전 표본 뒤에 걸렸으면 1)."""
+        `__reset__` (이 도메인의 리셋이 지금 걸렸거나 직전 표본 뒤에 걸렸으면 1). 다른 도메인의 포트도 들어 있다
+        (이 도메인 표본 시점의 값). fn은 보통 함수다 (async 함수는 표본 루프에서 기다릴 수 없음)."""
+        if domain not in self.cfg["clocks"]:
+            raise ValueError(f"add_property({name!r}): 없는 도메인 {domain!r} (도메인: {', '.join(self.cfg['clocks'])})")
+        if inspect.iscoroutinefunction(fn):
+            raise TypeError(f"add_property({name!r}): async 함수는 쓸 수 없음. 표본 값만 보고 None이나 실패 사유 문자열을 돌려주는 보통 함수로 쓴다")
         self.properties.append((name, domain, fn, req))
 
     async def drain(self, extra: int = 5, timeout: int = 10000) -> None:
@@ -507,7 +522,10 @@ class Harness:
         extra = self.cfg.get("extra_resets", {}).get(domain, [])
         rst = self.cfg["resets"].get(domain)
         rports = list(dict.fromkeys(p for p, _ in self.cfg["resets"].values()))
-        ports = [n for n, dom in self.cfg["port_domains"].items() if dom == domain] + rports + [p for p, _ in extra]
+        # 다른 도메인의 포트도 넣는다: 출력과 입력이 다른 도메인인 블록의 속성이 이 도메인 표본에서 읽으면 KeyError였다
+        clocks = {port for port, _ in self.cfg["clocks"].values()}
+        ports = list(dict.fromkeys([n for n, dom in self.cfg["port_domains"].items() if dom == domain]
+                                   + [n for n in self.cfg["port_domains"] if n not in clocks] + rports + [p for p, _ in extra]))
         traced = [n for n, dom in self._trace_names.items() if dom in (domain, None)]
         seq_ports = [n for n in self.cfg["inputs"] if self.cfg["port_domains"].get(n) == domain]
         first = True
@@ -541,6 +559,9 @@ class Harness:
                     if dom == domain:
                         self.prop_evals += 1
                         r = fn(sample, c)
+                        if inspect.iscoroutine(r):
+                            r.close()
+                            raise TypeError(f"속성 {name!r}: 함수가 코루틴을 돌려줌 (async). 보통 함수로 쓴다")
                         if r:
                             self.prop_fail.append({"property": name, "cycle": c, "domain": domain, "reason": r, "req": req})
             if traced:

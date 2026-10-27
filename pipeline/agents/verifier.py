@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pipeline.agents.task import ROOT, Task
 from pipeline.ir.model import Module
-from pipeline.tb.gen import harness_source
+from pipeline.tb.gen import harness_config, harness_source
 
 GUIDE = ROOT / "pipeline" / "agents" / "prompts" / "tb_guide.md"
 
@@ -226,6 +226,41 @@ def check_augment(l1: dict, before: str):
     return _check
 
 
+def api_misuse(tree: ast.AST, l1: dict) -> list[str]:
+    """하니스 API에 L1에 없는 이름을 넘긴 호출 (시뮬레이션 전에 잡는다. 실행하면 KeyError로 TB 실행 오류가 됨).
+    send는 입력 번들, set_ready·allow_overwrite는 출력 번들, drive와 flag_input은 단독 입력,
+    flag_output은 단독 출력, add_property의 둘째 인자는 도메인이다."""
+    cfg = harness_config(Module(l1))
+    in_b = {b["name"] for b in cfg["bundles"] if not b["dut_drives"]}
+    out_b = {b["name"] for b in cfg["bundles"] if b["dut_drives"]}
+    ins, outs = set(cfg["inputs"]), {o["name"] for o in cfg["outputs"]}
+    single = "단독 포트는 h.drive(입력 열), h.flag_input/h.flag_output(valid 플래그 스트림), dut.<포트>.value로 다룬다"
+
+    def names(want: set[str], what: str, extra: str = "") -> str:
+        return f"{what}: {', '.join(sorted(want)) or '없음'}{extra}"
+    rules = {   # 메서드 → (인자 위치, 허용 이름, 설명)
+        "send": (0, in_b, names(in_b, "입력 번들", f". {single}")),
+        "set_ready": (0, out_b, names(out_b, "출력 번들", f". {single}")),
+        "allow_overwrite": (0, out_b, names(out_b, "출력 번들")),
+        "drive": (0, ins, names(ins, "단독 입력", ". 입력 번들은 h.send")),
+        "flag_input": (1, ins, names(ins, "단독 입력")),
+        "flag_output": (1, outs, names(outs, "단독 출력")),
+        "add_property": (1, set(cfg["clocks"]), names(set(cfg["clocks"]), "도메인")),
+    }
+    errs = []
+    for n in ast.walk(tree):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in rules):
+            continue
+        k, allowed, desc = rules[n.func.attr]
+        args = [*n.args[k:k + 1]]
+        if n.func.attr in ("flag_input", "flag_output") and len(n.args) > 2 and isinstance(n.args[2], (ast.List, ast.Tuple)):
+            args += n.args[2].elts   # data 포트 목록
+        for a in args:
+            if isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value not in allowed:
+                errs.append(f"{n.lineno}번째 줄 h.{n.func.attr}({a.value!r}): 이 블록에 없는 이름 ({desc})")
+    return errs[:20]
+
+
 def check(l1: dict, before: str | None = None):
     """before: 수정 작업이면 고치기 전 테스트 내용 (바뀌지 않았으면 거부)."""
     module = l1["module"]
@@ -241,6 +276,7 @@ def check(l1: dict, before: str | None = None):
         tests = [f.name for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef)
                  and any("cocotb.test" in ast.unparse(d) for d in f.decorator_list)]
         errs = [] if len(tests) >= 2 else [f"cocotb 테스트가 둘 이상 있어야 함 (지금 {len(tests)}개)"]
+        errs += api_misuse(tree, l1)
         if not any(isinstance(n, ast.ClassDef) and n.name == "Model" for n in ast.walk(tree)):
             errs.append("Model 클래스가 없음")
             return errs

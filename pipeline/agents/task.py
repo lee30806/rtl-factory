@@ -100,6 +100,29 @@ def prepare(task: Task, work: Path) -> None:
         install_tools(work)
 
 
+def restore(task: Task, work: Path, before: dict[str, str], exclude: tuple[str, ...]) -> None:
+    """쓰기 범위 밖 변경을 되돌린다: 입력 파일은 다시 쓰고, 처음에 없던 파일은 지운다. 도구 사본(tools/)이 바뀌면 다시 설치한다."""
+    now = snapshot(work, exclude)
+    for rel in now:
+        if rel not in before:
+            (work / rel).unlink()
+    for rel, src in task.inputs.items():
+        p = work / rel
+        if isinstance(src, Path):
+            if src.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                shutil.copytree(src, p)
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(src, p)
+        else:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(src, encoding="utf-8")
+    if task.tools and any(k.startswith("tools/") and before.get(k) != now.get(k) for k in set(before) | set(now)):
+        shutil.rmtree(work / "tools", ignore_errors=True)
+        install_tools(work)
+
+
 def run_task(cfg: AgentConfig, task: Task, work: Path, check: Callable[[Path], list[str]] | None = None,
              retries: int = 0, run_root: Path | None = None) -> TaskResult:
     """작업 하나를 실행한다. check는 작업 디렉터리를 보고 오류 목록을 돌려준다 (빈 목록이면 통과).
@@ -118,11 +141,18 @@ def run_task(cfg: AgentConfig, task: Task, work: Path, check: Callable[[Path], l
     for attempts in range(1, retries + 2):
         r = run_agent(cfg, work, text, sandbox=sandbox)
         if not r.exit_ok and any(q in r.stderr_tail + r.stdout_tail for q in QUOTA_PATTERNS):
-            raise QuotaExceeded(f"{cfg.name}: 사용량 한도 ({(r.stderr_tail or r.stdout_tail).strip().splitlines()[0][:200]})")
+            # 한도 문구가 있는 줄을 남긴다 (첫 줄은 런타임의 다른 안내일 수 있음)
+            line = next((ln for ln in (r.stderr_tail + "\n" + r.stdout_tail).splitlines() if any(q in ln for q in QUOTA_PATTERNS)), "")
+            raise QuotaExceeded(f"{cfg.name}: 사용량 한도 ({line.strip()[:200]})")
         missing = [o for o in task.outputs if not (work / o).exists()]
         errors = [f"출력 파일이 없음: {m}" for m in missing]
         if not errors and check:
             errors = check(work)
+        # 입력 파일을 고치거나 쓰기 범위 밖에 파일을 만들면 되돌리고 다시 시킨다 (Repair가 out/patches.json 대신 ir.json을 직접 고침)
+        if attempts <= retries and (stray := scope_violations(before, snapshot(work, exclude))):
+            errors = [f"쓰기 범위 밖 변경 (되돌림): {v}. 입력 파일은 고치지 말고 {', '.join(task.write_scope)} 안의 출력 파일만 쓴다"
+                      for v in stray[:10]] + errors
+            restore(task, work, before, exclude)
         runs.append({"attempt": attempts, "returncode": r.returncode, "timed_out": r.timed_out,
                      "duration_s": round(r.duration_s, 1), "stdout_tail": r.stdout_tail[-1500:],
                      "stderr_tail": r.stderr_tail[-1500:], "errors": errors[:20]})
