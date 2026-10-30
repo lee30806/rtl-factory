@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 
 from experiments.bench.adapters.rtllm import load_rtllm_dir, materialize_builtin_pilot  # noqa: E402
 from experiments.bench.common.metrics import write_summary  # noqa: E402
-from experiments.bench.common.runner import run_bench_item, run_standalone_item  # noqa: E402
+from experiments.bench.common.runner import run_bench_item, run_spec_item, run_standalone_item  # noqa: E402
 from experiments.bench.common.schema import BenchItem, BenchResult  # noqa: E402
 from pipeline.agents import roles as roles_mod  # noqa: E402
 
@@ -33,6 +33,8 @@ def _run_suite(
     resume: bool,
     workers: int,
     max_auto_approves: int = 3,
+    spec_dir: Path | None = None,
+    ext_fix_rounds: int = 1,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_by_id: dict[str, BenchResult] = {}
@@ -41,7 +43,8 @@ def _run_suite(
             rf = out_dir / it.id / "bench_result.json"
             if rf.exists():
                 saved = json.loads(rf.read_text(encoding="utf-8"))
-                if saved.get("pipeline_status") not in ("paused_quota",):
+                skip_statuses = ("paused_quota",) if mode == "spec" else ("paused_quota", "spec_only")
+                if saved.get("pipeline_status") not in skip_statuses:
                     results_by_id[it.id] = BenchResult(**saved)
     quota_event = threading.Event()
 
@@ -50,6 +53,8 @@ def _run_suite(
             return None
         if mode == "standalone":
             res = run_standalone_item(it, out_dir / it.id, roles, isolate=isolate, resume=resume)
+        elif mode == "spec":
+            res = run_spec_item(it, out_dir / it.id, roles, isolate=isolate, resume=resume)
         else:
             res = run_bench_item(
                 it,
@@ -59,6 +64,8 @@ def _run_suite(
                 auto_approve=auto_approve,
                 max_auto_approves=max_auto_approves,
                 resume=resume,
+                spec_dir=spec_dir,
+                ext_fix_rounds=ext_fix_rounds,
             )
         if res.pipeline_status == "paused_quota":
             quota_event.set()
@@ -94,7 +101,8 @@ def _run_suite(
                 print(
                     f"[{mode} {done_cnt}/{len(items)}] {it.id}: status={res.pipeline_status} "
                     f"chosen_pass={res.bench_pass_chosen} any_pass={res.bench_pass_any} "
-                    f"runs={res.agent_runs} min={res.minutes}",
+                    + (f"ext_fix={len(res.ext_fix)} final_chosen_pass={res.bench_pass_chosen_final} " if res.ext_fix else "")
+                    + f"runs={res.agent_runs} min={res.minutes}",
                     flush=True,
                 )
                 ordered = [results_by_id[x.id] for x in items if x.id in results_by_id]
@@ -111,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bench", choices=["rtllm"], default="rtllm", help="대상 벤치마크")
     ap.add_argument("--dataset", type=Path, help="벤치마크 데이터셋 디렉터리 (생략 시 내장 파일럿 예제 사용)")
     ap.add_argument("--subset", choices=["sequential", "combinational", "all"], default="sequential")
-    ap.add_argument("--mode", choices=["harness", "standalone", "both"], default="harness", help="실행 모드")
+    ap.add_argument("--mode", choices=["harness", "standalone", "both", "spec"], default="harness", help="실행 모드")
+    ap.add_argument("--spec-dir", type=Path, help="미리 작성된 SPEC 디렉터리 (지정 시 <spec-dir>/<id>/spec을 복사해 재사용)")
     ap.add_argument("--filter", default="", help="문제 ID 부분 문자열 또는 정규식 필터")
     ap.add_argument("--limit", type=int, default=0, help="최대 실행 문제 수 (0이면 제한 없음)")
     ap.add_argument("--workers", type=int, default=1, help="병렬 문제 실행 워커 수")
@@ -121,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--auto-approve", action="store_true", default=True, help="waiting_approval 무인 자동 결정 활성화")
     ap.add_argument("--no-auto-approve", dest="auto_approve", action="store_false")
     ap.add_argument("--max-auto-approves", type=int, default=3, help="문제당 기댓값 수정 무인 승인 상한")
+    ap.add_argument("--ext-fix-rounds", type=int, default=1,
+                    help="외부 TB를 통과해 선택된 후보가 없을 때 외부 TB 결과로 SPEC을 고쳐 다시 돌리는 최대 횟수 (0이면 하지 않음)")
     ap.add_argument("--no-isolate", action="store_true", help="테스트용 샌드박스 격리 해제")
     args = ap.parse_args(argv)
 
@@ -161,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             workers=args.workers,
             max_auto_approves=args.max_auto_approves,
+            spec_dir=args.spec_dir,
+            ext_fix_rounds=args.ext_fix_rounds,
         )
         return 0 if (s_sum["total"] > 0 or h_sum["total"] > 0) else 1
 
@@ -174,7 +187,11 @@ def main(argv: list[str] | None = None) -> int:
         resume=args.resume,
         workers=args.workers,
         max_auto_approves=args.max_auto_approves,
+        spec_dir=args.spec_dir,
+        ext_fix_rounds=args.ext_fix_rounds,
     )
+    if args.mode == "spec":
+        return 0 if summary["total"] > 0 and summary["counts"]["spec_gate_pass"] > 0 else 1
     return 0 if summary["total"] > 0 and summary["counts"]["bench_pass_any"] > 0 else 1
 
 

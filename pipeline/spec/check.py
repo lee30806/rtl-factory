@@ -177,7 +177,7 @@ def review_items(spec: Spec) -> list[SpecIssue]:
     """사람이 최종 승인에서 볼 항목: 미정의 동작과 열린 질문."""
     f = _name(spec)
     out = [SpecIssue("UNDEFINED", "info", f"{f}:{r.line}", f"{r.id} 미정의: {r.text}") for r in spec.requirements if r.level == "미정의"]
-    out += [SpecIssue("OPEN_QUESTION", "question", f"{f}:{q['line']}", f"{q['id']} {q['text']}", "open_question") for q in spec.questions]
+    out += [SpecIssue("SPEC_REVIEW" if "재검토" in q["text"] else "OPEN_QUESTION", "question", f"{f}:{q['line']}", f"{q['id']} {q['text']}", "open_question") for q in spec.questions]
     return out
 
 

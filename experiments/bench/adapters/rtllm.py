@@ -127,8 +127,8 @@ def _extract_header_from_desc(desc: str, fallback_file: Path | None = None, fall
             for sym in inst.body:
                 if sym.kind == pyslang.SymbolKind.Parameter and not sym.isLocalParam:
                     val_str = str(sym.value).strip()
-                    # 내부 FSM 상태 상수(비트 리터럴) 및 파생 상수 N 제외
-                    if "'" in val_str or sym.name == "N":
+                    # 내부 FSM 상태 상수(비트 리터럴) 제외
+                    if "'" in val_str:
                         continue
                     params.append((sym.name, val_str))
             ports: list[str] = []

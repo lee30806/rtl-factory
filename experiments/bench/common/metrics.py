@@ -25,6 +25,10 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
     pipe_ok = sum(1 for r in results if r.pipeline_status == "pass")
     chosen_ok = sum(1 for r in results if r.bench_pass_chosen)
     any_ok = sum(1 for r in results if r.bench_pass_any)
+    # 외부 TB 보정 뒤 (보정을 하지 않은 문제는 첫 결과와 같음). 외부 TB를 근거로 SPEC을 고쳤으므로 pass@1과 따로 센다
+    chosen_final = sum(1 for r in results if r.bench_pass_chosen or r.bench_pass_chosen_final)
+    any_final = sum(1 for r in results if r.bench_pass_any or r.bench_pass_any_final)
+    ext_fixed = sum(1 for r in results if r.ext_fix)
 
     lang_stats: dict[str, dict[str, Any]] = {}
     for r in results:
@@ -55,12 +59,17 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
             "pipeline_pass": pipe_ok,
             "bench_pass_chosen": chosen_ok,
             "bench_pass_any": any_ok,
+            "bench_pass_chosen_final": chosen_final,
+            "bench_pass_any_final": any_final,
+            "ext_fix_items": ext_fixed,
         },
         "rates": {
             "spec_gate_pass": round(spec_ok / total, 4),
             "pipeline_pass": round(pipe_ok / total, 4),
             "bench_pass_chosen": round(chosen_ok / total, 4),
             "bench_pass_any": round(any_ok / total, 4),
+            "bench_pass_chosen_final": round(chosen_final / total, 4),
+            "bench_pass_any_final": round(any_final / total, 4),
         },
         "avg_agent_runs": round(sum(r.agent_runs for r in results) / total, 2),
         "avg_minutes": round(sum(r.minutes for r in results) / total, 2),
@@ -68,6 +77,15 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
         "by_lang": by_lang,
         "items": [r.to_dict() for r in results],
     }
+
+
+def _ext_cell(r: BenchResult) -> str:
+    """외부 TB 보정 칸: 회차 수, 계기, 마지막 회차의 상태와 선택 후보 외부 TB 결과."""
+    if not r.ext_fix:
+        return "-"
+    last = r.ext_fix[-1]
+    trig = {"external_fail": "외부 실패", "internal_mismatch": "내부 불일치"}.get(last.get("trigger"), last.get("trigger"))
+    return f"{len(r.ext_fix)}회 ({trig}) `{last.get('pipeline_status')}` {'PASS' if r.bench_pass_chosen_final else 'FAIL'}"
 
 
 def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
@@ -84,11 +102,14 @@ def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
         f"- **Pipeline Pass**: {summary.get('counts', {}).get('pipeline_pass', 0)}/{summary['total']} ({summary.get('rates', {}).get('pipeline_pass', 0) * 100:.1f}%)",
         f"- **Bench Pass (`pass@1` chosen)**: {summary.get('counts', {}).get('bench_pass_chosen', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_chosen', 0) * 100:.1f}%)",
         f"- **Bench Pass (any candidate)**: {summary.get('counts', {}).get('bench_pass_any', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_any', 0) * 100:.1f}%)",
+        f"- **외부 TB 보정 뒤 (chosen)**: {summary.get('counts', {}).get('bench_pass_chosen_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_chosen_final', 0) * 100:.1f}%)"
+        f" — 보정한 문제 {summary.get('counts', {}).get('ext_fix_items', 0)}개. 외부 TB를 근거로 SPEC을 고친 결과라 pass@1이 아님",
+        f"- **외부 TB 보정 뒤 (any candidate)**: {summary.get('counts', {}).get('bench_pass_any_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_any_final', 0) * 100:.1f}%)",
         "",
         "## Per-Item Results",
         "",
-        "| ID | Top | SPEC Gate | Pipeline | Chosen `pass@1` | c0 (SV) | c1 (Py) | Synth Cells | Comb Loops | Agent Runs |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| ID | Top | SPEC Gate | Pipeline | Chosen `pass@1` | c0 (SV) | c1 (Py) | 외부 TB 보정 | Synth Cells | Comb Loops | Agent Runs |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in results:
         c0_ok = r.candidates.get("c0", {}).get("bench_eval", {}).get("ok")
@@ -99,7 +120,7 @@ def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
         lines.append(
             f"| `{r.id}` | `{r.top}` | {'PASS' if r.spec_gate_ok else 'FAIL'} | `{r.pipeline_status}` "
             f"| {'PASS' if r.bench_pass_chosen else 'FAIL'} | {'PASS' if c0_ok else 'FAIL'} "
-            f"| {'PASS' if c1_ok else ('-' if 'c1' not in r.candidates else 'FAIL')} | {cells} | {loops} | {r.agent_runs} |"
+            f"| {'PASS' if c1_ok else ('-' if 'c1' not in r.candidates else 'FAIL')} | {_ext_cell(r)} | {cells} | {loops} | {r.agent_runs} |"
         )
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return summary

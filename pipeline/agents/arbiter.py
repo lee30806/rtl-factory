@@ -37,8 +37,8 @@ SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 �
 ## 할 일
 SPEC 구절을 근거로 판정하고 `{out}`에 아래 JSON을 쓴다.
 
-{{"verdict": "rtl_wrong | test_wrong | spec_ambiguous", "reqs": ["근거 요구사항 ID"], "reason": "SPEC 문장을 인용한 판정 이유",
-  "proposal": "test_wrong이면 참조 모델이나 기댓값을 어떻게 고칠지, spec_ambiguous이면 작성자에게 물을 질문"}}
+{{"verdict": "rtl_wrong | test_wrong | spec_ambiguous", "reqs": ["근거 요구사항 ID"], "reason": "SPEC 문장을 인용한 판정 이유 (수정 사유)",
+  "proposal": "test_wrong이면 참조 모델이나 기댓값을 어떻게 고칠지, spec_ambiguous이면 작성자에게 물을 질문 및 테스트가 두 해석을 모두 허용하도록 완화하는 수정안"}}
 
 - rtl_wrong: SPEC대로면 기댓값이 맞고 RTL이 틀림
 - test_wrong: SPEC대로면 RTL이 맞고 기댓값(참조 모델이나 시나리오)이 틀림. 수정은 사람이 승인한 뒤에 적용된다

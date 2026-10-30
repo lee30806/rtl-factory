@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-LINT_ARGS = ["-Wall"]
+LINT_ARGS = ["-Wall", "-Wno-UNUSEDPARAM"]
 _VLT = re.compile(r"^%(Warning|Error)(?:-([A-Z0-9_]+))?: (?:(\S+?):(\d+):(?:\d+:)?\s*)?(.*)$")
 
 

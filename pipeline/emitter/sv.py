@@ -117,11 +117,11 @@ def _cell_params(m: Module, prm: list[str] | None = None) -> str:
     return f' #({", ".join(prm)})' if prm else ""
 
 
-def _sensitivity(dom: dict) -> str:
+def _sensitivity(dom: dict, has_reset: bool = True) -> str:
     edge = "posedge" if dom["edge"] == "pos" else "negedge"
     s = f'{edge} {dom["clock"]}'
     r = dom.get("reset")
-    if r and r["async"]:
+    if has_reset and r and r["async"]:
         s += f' or {"negedge" if r["active"] == "low" else "posedge"} {r["port"]}'
     return s
 
@@ -133,8 +133,9 @@ def _indent(body: str, n: int) -> str:
 
 def _seq(w: _Writer, m: Module, dom: dict, resets: list[tuple[str, str, str]], body: str, body_node: str | None) -> None:
     """resets: (이름, 리셋값, 리셋값이 온 노드)."""
-    w.line(f"  always_ff @({_sensitivity(dom)}) begin")
-    if resets and dom.get("reset"):   # 리셋 없는 도메인의 리셋값은 V7이 막음
+    has_rst = bool(resets and dom.get("reset"))
+    w.line(f"  always_ff @({_sensitivity(dom, has_reset=has_rst)}) begin")
+    if has_rst:   # 리셋 없는 도메인의 리셋값은 V7이 막음
         width = max(len(n) for n, _, _ in resets)
         for kw, cond in (("if", _reset_cond(dom)), ("end else if", _extra_cond(dom))):
             if cond is None:

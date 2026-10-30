@@ -77,6 +77,10 @@ class BenchResult:
     bench_pass_chosen: bool = False
     bench_pass_any: bool = False
     ppa_chosen: dict[str, Any] | None = None
+    # 외부 TB 보정 (위 필드는 첫 실행 결과 그대로): 회차별 계기, 수정 사유, 다시 돌린 결과
+    ext_fix: list[dict[str, Any]] = field(default_factory=list)
+    bench_pass_chosen_final: bool = False                # 마지막 실행에서 선택된 후보의 외부 TB 통과
+    bench_pass_any_final: bool = False                   # 어느 실행이든 외부 TB를 통과한 후보가 있음
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

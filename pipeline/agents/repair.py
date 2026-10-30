@@ -27,15 +27,17 @@ TASK = """\
 ## 입력
 - `ir.json`: 지금 IR
 - `failure.json`: 실패 리포트. `classified`는 실패 유형과 대상 노드, `report`는 첫 불일치(기댓값과 실제값),
-  그 전후의 FSM 상태, 불일치 출력의 팬인 노드와 신호 값, 관련 SPEC 구절이다
+  그 전후의 FSM 상태, 불일치 출력의 팬인 노드와 신호 값, 관련 SPEC 구절이다.
+  `arbiter_verdict`가 있으면 Arbiter가 SPEC을 근거로 판정한 **수정 사유**(`reason`, `reqs`, `proposal`)다
 - `history.json`: 이전에 적용한 patch (같은 patch를 반복하지 않는다)
 - `spec.md`: SPEC. 무엇이 맞는 동작인지는 SPEC이 정한다
 - `guide.md`: IR 작성 안내. IR의 `lang`이 `py`면 body와 cond는 Python 조각이다 (안내의 "Python 조각" 절).
   실패 메시지에 "Python 조각 N번째 줄"이 있으면 그 조각의 N번째 줄이 방출된 RTL의 오류 위치다
 
 ## 할 일
-1. `failure.json`의 실패를 SPEC과 비교해 원인 노드를 찾는다. 팬인 노드 가운데에서 찾는다.
-2. 고치는 patch 목록을 `{out}`에 JSON 배열로 쓴다. patch 하나는 아래 형식이다.
+1. `failure.json`의 실패(및 `arbiter_verdict`의 수정 사유)를 SPEC과 비교해 원인 노드를 찾는다. 팬인 노드 가운데에서 찾는다.
+   `arbiter_verdict`가 있으면 이미 Arbiter가 테스트가 아니라 RTL 쪽을 고쳐야 한다고 판정한 것이므로, 그 수정 사유(`reason`)를 반드시 반영해 IR을 수정한다.
+2. 고치는 patch 목록을 `{out}`에 JSON 배열로 쓴다 (빈 배열 `[]`은 허용되지 않는다). patch 하나는 아래 형식이다.
    - `{{"op": "set", "target": "blocks/<id>", "field": "body", "value": "..."}}`
    - `{{"op": "set", "target": "blocks/<id>/transitions/<id>", "field": "cond", "value": "..."}}`
    - `{{"op": "add", "target": "signals", "value": {{...}}}}`, `{{"op": "remove", "target": "signals/<name>"}}`
@@ -111,6 +113,8 @@ def check(ir: dict, library: dict[str, Module] | None = None, siblings: set[str]
             patches = json.loads((work / OUT).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             return [f"patch 목록을 읽을 수 없음: {e}"]
+        if isinstance(patches, list) and len(patches) == 0:
+            return ["patch 목록이 비어 있음: failure.json 및 arbiter_verdict의 수정 사유를 반영해 최소 1개 이상의 patch를 작성하거나 suspect_module / request_interface_change를 사용하세요"]
         if interface_change(patches) is not None:
             return []
         if (sus := suspect(patches)) is not None:

@@ -71,6 +71,7 @@ TASK = """\
   도메인마다 동기화한 리셋이 따로 나오므로, 두 도메인이 리셋 포트 하나를 함께 쓰면 연결할 수 없다.
 - Block Top에 inout 포트가 있으면 Block Top에 `tristate` 블록을 두고(`guide.md`의 blocks 표), 하위 모듈은 inout 대신
   `<이름>_o`, `<이름>_oe`(출력), `<이름>_i`(입력) 포트를 둔다. Block Top은 이 셋을 wire 신호로 받아 `tristate`의 o, oe, i에 잇는다.
+- 비표준 동기화 지연이나 추가 레지스터 단 수라도 SPEC이 명시적으로 요구한 사항이면 임의로 생략하거나 바꾸지 말고 **일단 SPEC을 그대로 지키며**, `out/assumptions.json`에 `{{"text": "[SPEC 재검토 알람] ...", "affects": ["timing"]}}` 항목을 추가해 SPEC 재검토 알람을 발생시킨다.
 {limit}"""
 
 LIMIT = """- 하위 모듈(role `module`)은 {n}개 이하로 둔다. 이 블록은 크지 않아 나누면 모듈 사이 계약만 늘어난다.

@@ -26,7 +26,7 @@ RUNS = Path(os.environ.get("CHIPDEPT_RUNS", Path.home() / ".cache" / "rtl-factor
 # 런타임이 사용량 한도를 알리는 문구. 이때는 재시도하지 않고 스케줄러가 멈췄다가 나중에 이어서 실행한다.
 # 구독 접근이 막힌 경우도 같다 (2026-10-22 P11 R6: 실패로 기록되어 회차 하나를 잃음)
 QUOTA_PATTERNS = ("RESOURCE_EXHAUSTED", "quota reached", "rate limit", "Rate limit", "429", "usage limit", "hit your limit",
-                  "session limit", "disabled Claude subscription access")
+                  "weekly limit", "session limit", "disabled Claude subscription access")
 
 
 class QuotaExceeded(RuntimeError):

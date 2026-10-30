@@ -377,3 +377,137 @@ def test_b1_rtllm_pulse_detect_e2e(tmp_path: Path):
     summary = write_summary([res], tmp_path / "out")
     assert summary["rates"]["bench_pass_chosen"] == 1.0
     assert (tmp_path / "out" / "summary.md").exists()
+
+
+# ---------------------------------------------------------------- 외부 TB 보정
+def _axis_item_and_l1(tmp_path: Path):
+    golden_cfg = json.loads((G / "golden.json").read_text(encoding="utf-8"))
+    params = {k: str(v) for k, v in golden_cfg["upstream_params"]["axis_adapter"].items()}
+    upstream_v = G / "upstream" / "rtl" / "axis_adapter.v"
+    item = BenchItem(benchmark="rtllm", id="axis_adapter", category="sequential", top="axis_adapter",
+                     prompt_text=(G / "spec.md").read_text(encoding="utf-8") + "\nClock: posedge clk, synchronous active-high reset rst.",
+                     header_sv=str(upstream_v), params=params, reference_rtl=[str(upstream_v)])
+    top_l1, tables, _ = extract_header_l1(item, tmp_path / "l1")
+    return item, top_l1, tables
+
+
+def _revised_spec(tmp_path: Path, alarm: bool = True) -> Path:
+    text = (G / "block_spec.md").read_text(encoding="utf-8")
+    text = text.replace("m_axis_tkeep은 항상 1이다.", "m_axis_tkeep은 리셋이 풀린 뒤 항상 1이다.")
+    if alarm:
+        text += "- Q-02 [SPEC 재검토 알람] 외부 테스트벤치 근거로 ADP-04를 바꿈: 리셋 중 값은 정하지 않음. 근거: testbench.v 40ns\n"
+    p = tmp_path / ("spec_alarm.md" if alarm else "spec_noalarm.md")
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+CHANGE = [{"reqs": ["ADP-04"], "before": "m_axis_tkeep은 항상 1이다.", "after": "m_axis_tkeep은 리셋이 풀린 뒤 항상 1이다.",
+           "evidence": "testbench.v 40ns: m_axis_tkeep 비교는 리셋 해제 뒤부터", "reason": "SPEC이 리셋 중 값을 외부 기준과 다르게 정함"}]
+
+
+def test_ext_fix_check_requires_change_reasons_and_alarm(tmp_path: Path):
+    """고친 SPEC은 게이트를 통과하고, 바뀌었고, 바꾼 요구사항마다 수정 사유와 10절 재검토 알람이 있어야 한다."""
+    from experiments.bench.common import ext_fix
+
+    _, top_l1, _ = _axis_item_and_l1(tmp_path)
+    prev = (G / "block_spec.md").read_text(encoding="utf-8")
+    chk = ext_fix.check(top_l1, prev)
+
+    def work(spec: Path, changes) -> Path:
+        w = tmp_path / f"w{len(list(tmp_path.glob('w*')))}"
+        (w / "out").mkdir(parents=True)
+        (w / "out" / "spec.md").write_text(spec.read_text(encoding="utf-8"), encoding="utf-8")
+        (w / "out" / "changes.json").write_text(json.dumps(changes, ensure_ascii=False), encoding="utf-8")
+        return w
+
+    assert chk(work(_revised_spec(tmp_path), CHANGE)) == []
+    assert any("바뀌지 않음" in e for e in chk(work(G / "block_spec.md", CHANGE)))
+    assert any("재검토 알람" in e for e in chk(work(_revised_spec(tmp_path, alarm=False), CHANGE)))
+    assert any("reason" in e for e in chk(work(_revised_spec(tmp_path), [{**CHANGE[0], "reason": ""}])))
+    assert any("없는 요구사항" in e for e in chk(work(_revised_spec(tmp_path), [{**CHANGE[0], "reqs": ["ADP-99"]}])))
+    assert any("하나 이상" in e for e in chk(work(_revised_spec(tmp_path), [])))
+
+
+def test_ext_fix_revise_spec_with_agent_hides_reference_rtl(tmp_path: Path):
+    """SpecWriter가 외부 TB, 후보 RTL, 로그를 받아 SPEC을 고친다. 정답 RTL은 작업 디렉터리에 들어가지 않는다."""
+    from experiments.bench.common import ext_fix
+    from experiments.bench.common.runner import _prepare_iverilog_tb
+
+    item, top_l1, tables = _axis_item_and_l1(tmp_path)
+    src = tmp_path / "ds"
+    src.mkdir()
+    (src / "testbench.v").write_text("module tb; endmodule\n", encoding="utf-8")
+    (src / "expected.txt").write_text("1\n0\n", encoding="utf-8")
+    shutil.copy(item.reference_rtl[0], src / "verified_axis_adapter.v")
+    item.eval = EvalSpec(tb_files=[str(src / "testbench.v")])
+    item.reference_rtl = [str(src / "verified_axis_adapter.v")]
+    tb_dir = ext_fix.tb_bundle(item, tmp_path / "tb", _prepare_iverilog_tb)
+    assert sorted(p.name for p in tb_dir.iterdir()) == ["expected.txt", "testbench.v"]
+
+    rtl = tmp_path / "c0.sv"
+    rtl.write_text("module axis_adapter; endmodule\n", encoding="utf-8")
+    log = tmp_path / "sim.log"
+    log.write_text("Failed at 40: m_axis_tkeep=0 (expected 1)\n", encoding="utf-8")
+    cands = {"c0": {"rtl": [rtl], "result": {"ok": False, "stage": "sim"}, "logs": [log]}}
+    task = ext_fix.make_task(item, "external_fail", G / "block_spec.md", tables, "module axis_adapter; endmodule", tb_dir, cands, {})
+    assert "candidates/c0/sim.log" in task.inputs and "tb" in task.inputs
+    assert not any("verified" in k or "upstream" in k for k in task.inputs)
+
+    files = {"SpecWriter|외부 테스트벤치": {"out/spec.md": f"@{_revised_spec(tmp_path)}",
+                                         "out/changes.json": json.dumps(CHANGE, ensure_ascii=False)}}
+    new, changes, errs, res = ext_fix.revise_spec(item, tmp_path / "ext1", "external_fail", G / "block_spec.md", top_l1, tables,
+                                                  "module axis_adapter; endmodule", tb_dir, cands, {}, _fake_roles(tmp_path, files),
+                                                  isolate=False)
+    assert res.ok and not errs and new is not None
+    assert "리셋이 풀린 뒤" in new.read_text(encoding="utf-8")
+    assert changes == CHANGE and (tmp_path / "ext1" / "changes.json").exists()
+
+
+def _scored(status: str, chosen_ok: bool, c_ok: list[bool | None]) -> dict:
+    cands = {f"c{i}": {"lang": "sv", "pipeline_ok": status == "pass", "repairs": 0, "py_equiv": {},
+                       "bench_eval": {"ok": False, "skipped": "IR 미생성"} if ok is None else {"ok": ok, "stage": "sim"}, "ppa": None}
+             for i, ok in enumerate(c_ok)}
+    return {"rep": {"status": status, "chosen": {"m": 0} if status == "pass" else None, "review": [], "agent_runs": 3},
+            "auto_decs": [], "candidates": cands, "eval_root": Path("/nonexistent"),
+            "bench_pass_chosen": chosen_ok, "bench_pass_any": chosen_ok or any(c_ok), "ppa_chosen": None}
+
+
+def test_ext_fix_trigger():
+    from experiments.bench.common.runner import ext_fix_trigger
+
+    item = BenchItem(benchmark="rtllm", id="x", category="sequential", top="x", prompt_text="", header_sv="")
+    assert ext_fix_trigger(item, _scored("pass", True, [True, True])) is None
+    assert ext_fix_trigger(item, _scored("pass", False, [False, False])) == "external_fail"
+    assert ext_fix_trigger(item, _scored("waiting_approval", False, [True, False])) == "internal_mismatch"
+    assert ext_fix_trigger(item, _scored("failed", False, [None, None])) is None          # 채점까지 간 후보가 없음: 근거 없음
+    assert ext_fix_trigger(item, _scored("paused_quota", False, [False, None])) is None
+    item.eval = EvalSpec(kind="yosys_lec")
+    assert ext_fix_trigger(item, _scored("pass", False, [False, False])) is None
+
+
+def test_run_bench_item_ext_fix_keeps_first_result(tmp_path: Path, monkeypatch):
+    """외부 TB 보정 뒤에도 pass@1 필드는 첫 실행 결과 그대로이고, 보정 결과와 수정 사유는 ext_fix와 *_final에 따로 남는다."""
+    from experiments.bench.common import runner as rmod
+
+    spec_dir = tmp_path / "out" / "spec"
+    spec_dir.mkdir(parents=True)
+    shutil.copy(G / "block_spec.md", spec_dir / "spec.md")
+    runs = iter([_scored("pass", False, [False, False]), _scored("pass", True, [True, False])])
+    calls = []
+    monkeypatch.setattr(rmod, "run_and_score", lambda item, run_dir, eval_root, spec, *a, **k: (calls.append((run_dir.name, spec)), next(runs))[1])
+    revised = tmp_path / "rev.md"
+    revised.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(rmod, "_ext_fix_spec", lambda item, rdir, trig, spec, out, scored, roles, iso: (revised, CHANGE, [], 1))
+
+    item = BenchItem(benchmark="rtllm", id="axis_adapter", category="sequential", top="axis_adapter", prompt_text="", header_sv="")
+    roles = Roles({}, {"author": 2}, {})
+    res = rmod.run_bench_item(item, tmp_path / "out", roles, isolate=False, ext_fix_rounds=2)
+    assert [c[0] for c in calls] == ["run", "run"] and calls[1][1] == revised
+    assert res.bench_pass_chosen is False and res.bench_pass_any is False          # 첫 결과 그대로
+    assert res.bench_pass_chosen_final and res.bench_pass_any_final
+    assert len(res.ext_fix) == 1 and res.ext_fix[0]["trigger"] == "external_fail" and res.ext_fix[0]["changes"] == CHANGE
+    assert res.agent_runs == 3 + 1 + 3
+
+    s = write_summary([res], tmp_path / "out")
+    assert s["counts"]["bench_pass_chosen"] == 0 and s["counts"]["bench_pass_chosen_final"] == 1
+    assert "외부 TB 보정 뒤" in (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")

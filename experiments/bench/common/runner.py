@@ -9,9 +9,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from experiments.bench.common import ext_fix
 from experiments.bench.common.schema import BenchItem, BenchResult
-from experiments.bench.common.to_spec import _read_header_text, generate_spec, strip_to_header
-from pipeline.agents import roles as roles_mod
+from experiments.bench.common.to_spec import _read_header_text, extract_header_l1, generate_spec, strip_to_header
+from pipeline.agents import roles as roles_mod, spec_writer
 from pipeline.agents.task import RUNS, QuotaExceeded, Task, run_task
 from pipeline.emitter.sdc import emit_sdc
 from pipeline.ir.model import Module
@@ -79,7 +80,9 @@ def auto_decide(
                     [pid],
                     "approved",
                     by=by,
-                    note=f"무인 자동 승인 ({cnt + 1}/{max_auto_approves}): Arbiter test_wrong 판정 반영",
+                    note=f"무인 자동 승인 ({cnt + 1}/{max_auto_approves}): "
+                         + ("테스트 실행 오류 수정" if p.get("tb_error") else
+                            "Arbiter spec_ambiguous 판정 (테스트 완화)" if p.get("spec_ambiguous") else "Arbiter test_wrong 판정 반영"),
                 )
                 exp_approvals_per_cand[c] = cnt + 1
             else:
@@ -391,6 +394,58 @@ def evaluate_ppa(sv_files: list[Path], top: str, ppa_dir: Path) -> dict[str, Any
     }
 
 
+def run_spec_item(
+    item: BenchItem,
+    out_dir: Path,
+    roles: roles_mod.Roles,
+    isolate: bool = True,
+    resume: bool = False,
+) -> BenchResult:
+    """단일 벤치마크 문제의 입력 변환(to_spec: L1 추출 → SpecWriter → spec_gate 검증)만 수행한다."""
+    out_dir = Path(out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    res_file = out_dir / "bench_result.json"
+    spec_path = out_dir / "spec" / "spec.md"
+    if resume and res_file.exists():
+        saved = json.loads(res_file.read_text(encoding="utf-8"))
+        if saved.get("pipeline_status") not in ("paused_quota",) and (not saved.get("spec_gate_ok") or spec_path.exists()):
+            return BenchResult(**saved)
+
+    t0 = time.monotonic()
+    try:
+        spec_out, spec_errs, spec_task_res = generate_spec(item, out_dir / "spec", roles, isolate=isolate)
+        spec_agent_runs = spec_task_res.attempts
+    except QuotaExceeded as exc:
+        res = BenchResult(
+            benchmark=item.benchmark,
+            id=item.id,
+            category=item.category,
+            top=item.top,
+            spec_gate_ok=False,
+            spec_errors=[str(exc)],
+            pipeline_status="paused_quota",
+            agent_runs=1,
+            minutes=round((time.monotonic() - t0) / 60, 2),
+        )
+        res_file.write_text(json.dumps(res.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return res
+
+    ok = spec_out is not None and not spec_errs
+    res = BenchResult(
+        benchmark=item.benchmark,
+        id=item.id,
+        category=item.category,
+        top=item.top,
+        spec_gate_ok=ok,
+        spec_errors=spec_errs,
+        pipeline_status="spec_only" if ok else "spec_failed",
+        agent_runs=spec_agent_runs,
+        minutes=round((time.monotonic() - t0) / 60, 2),
+    )
+    res_file.write_text(json.dumps(res.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    return res
+
+
 def run_bench_item(
     item: BenchItem,
     out_dir: Path,
@@ -400,19 +455,31 @@ def run_bench_item(
     max_auto_approves: int = 3,
     max_arch_revisions: int = 1,
     resume: bool = False,
+    spec_dir: Path | None = None,
+    ext_fix_rounds: int = 1,
 ) -> BenchResult:
-    """단일 벤치마크 문제를 입력 변환(to_spec) → 무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정까지 수행한다."""
+    """단일 벤치마크 문제를 입력 변환(to_spec) → 무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정까지 수행한다.
+    외부 TB를 통과해 선택된 후보가 없으면 외부 TB 결과로 SPEC을 고쳐 ext_fix_rounds번까지 다시 돌린다 (ext_fix.py)."""
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     res_file = out_dir / "bench_result.json"
     if resume and res_file.exists():
         saved = json.loads(res_file.read_text(encoding="utf-8"))
-        if saved.get("pipeline_status") not in ("paused_quota",):
+        if saved.get("pipeline_status") not in ("paused_quota", "spec_only"):
             return BenchResult(**saved)
 
     t0 = time.monotonic()
 
     spec_path = out_dir / "spec" / "spec.md"
+    if not spec_path.exists() and spec_dir is not None:
+        ext_spec_dir = Path(spec_dir).resolve() / item.id / "spec"
+        if (ext_spec_dir / "spec.md").exists():
+            shutil.copytree(ext_spec_dir, out_dir / "spec", dirs_exist_ok=True)
+            # 헤더 추출이 바뀐 뒤 쓴 SPEC이 아니면 (예: 파라미터가 빠진 2~4절) 버리고 새로 쓴다
+            top_l1, _, _ = extract_header_l1(item, out_dir / "spec" / "l1_extract")
+            if stale := spec_writer.gate(spec_path, top_l1):
+                print(f"[{item.id}] --spec-dir SPEC이 지금의 헤더 추출과 맞지 않아 새로 씀: {stale[:2]}", flush=True)
+                spec_path.unlink()
     spec_agent_runs = 0
     if not spec_path.exists():
         try:
@@ -449,7 +516,72 @@ def run_bench_item(
 
     extra_cells = [Path(c).resolve() for c in item.cells if Path(c).exists()]
     cells = [*STUB_CELLS, *extra_cells]
-    run_dir = out_dir / "run"
+    opts = dict(isolate=isolate, auto_approve=auto_approve, max_auto_approves=max_auto_approves, max_arch_revisions=max_arch_revisions)
+    first = run_and_score(item, out_dir / "run", out_dir / "eval", spec_path, roles, cells, **opts)
+    agent_runs = spec_agent_runs + int(first["rep"].get("agent_runs", 0))
+
+    # 외부 TB 보정: 첫 결과(pass@1)는 그대로 두고, 고친 SPEC으로 다시 돌린 결과는 ext_fix에 따로 남긴다
+    rounds: list[dict[str, Any]] = []
+    status = first["rep"].get("status", "failed")
+    last, cur_spec = first, spec_path
+    for n in range(1, ext_fix_rounds + 1):
+        trigger = ext_fix_trigger(item, last)
+        if trigger is None:
+            break
+        rdir = out_dir / f"ext{n}"
+        try:
+            new_spec, changes, errs, runs = _ext_fix_spec(item, rdir, trigger, cur_spec, out_dir, last, roles, isolate)
+        except QuotaExceeded as exc:
+            status = "paused_quota"
+            rounds.append({"round": n, "trigger": trigger, "spec_errors": [str(exc)], "pipeline_status": "paused_quota"})
+            break
+        agent_runs += runs
+        rnd: dict[str, Any] = {"round": n, "trigger": trigger, "spec": str(new_spec) if new_spec else None,
+                               "changes": changes, "spec_errors": errs}
+        if new_spec is None:
+            rounds.append({**rnd, "pipeline_status": "spec_failed"})
+            break
+        last = run_and_score(item, rdir / "run", rdir / "eval", new_spec, roles, cells, **opts)
+        agent_runs += int(last["rep"].get("agent_runs", 0))
+        rounds.append({**rnd, "pipeline_status": last["rep"].get("status", "failed"), "chosen": last["rep"].get("chosen"),
+                       "review_codes": sorted({x["code"] for x in last["rep"].get("review", [])}),
+                       "candidates": last["candidates"], "bench_pass_chosen": last["bench_pass_chosen"],
+                       "bench_pass_any": last["bench_pass_any"]})
+        if last["rep"].get("status") == "paused_quota":
+            status = "paused_quota"
+            break
+        cur_spec = new_spec
+
+    rep = first["rep"]
+    result = BenchResult(
+        benchmark=item.benchmark,
+        id=item.id,
+        category=item.category,
+        top=item.top,
+        spec_gate_ok=True,
+        spec_errors=[],
+        pipeline_status=status,
+        chosen=rep.get("chosen"),
+        agent_runs=agent_runs,
+        minutes=round((time.monotonic() - t0) / 60, 2),
+        auto_approvals=first["auto_decs"],
+        review_codes=sorted({x["code"] for x in rep.get("review", [])}),
+        candidates=first["candidates"],
+        bench_pass_chosen=first["bench_pass_chosen"],
+        bench_pass_any=first["bench_pass_any"],
+        ppa_chosen=first["ppa_chosen"],
+        ext_fix=rounds,
+        bench_pass_chosen_final=last["bench_pass_chosen"],
+        bench_pass_any_final=first["bench_pass_any"] or any(r.get("bench_pass_any") for r in rounds),
+    )
+    res_file.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Path, roles: roles_mod.Roles,
+                  cells: list[Path], isolate: bool = True, auto_approve: bool = True, max_auto_approves: int = 3,
+                  max_arch_revisions: int = 1) -> dict[str, Any]:
+    """무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정."""
     rep, auto_decs = run_pipeline_unattended(
         run_dir,
         spec_path,
@@ -477,14 +609,14 @@ def run_bench_item(
             for p in sorted((run_dir / "verify").glob(f"*_c{k}_*/pyequiv_*/pyequiv_result.json"))
         }
 
-        cand_rtl_dir = out_dir / "eval" / ckey / "rtl"
+        cand_rtl_dir = eval_root / ckey / "rtl"
         sv_files = extract_candidate_rtl(run_dir, k, cand_rtl_dir, cells=cells)
         bench_eval: dict[str, Any] = {"ok": False, "skipped": "IR 미생성"}
         ppa_info: dict[str, Any] | None = None
         if sv_files:
-            bench_eval = evaluate_rtl(item, sv_files, out_dir / "eval" / ckey / "tb")
+            bench_eval = evaluate_rtl(item, sv_files, eval_root / ckey / "tb")
             if bench_eval.get("ok") or pipe_ok:
-                ppa_info = evaluate_ppa(sv_files, item.top, out_dir / "eval" / ckey / "ppa")
+                ppa_info = evaluate_ppa(sv_files, item.top, eval_root / ckey / "ppa")
 
         candidates_info[ckey] = {
             "lang": lang,
@@ -509,34 +641,60 @@ def run_bench_item(
         else:
             rtl_files = sorted((run_dir / "rtl").glob("*.sv"))
             if rtl_files:
-                ev = evaluate_rtl(item, rtl_files, out_dir / "eval" / "chosen" / "tb")
+                ev = evaluate_rtl(item, rtl_files, eval_root / "chosen" / "tb")
                 bench_pass_chosen = bool(ev.get("ok"))
-                ppa_chosen = evaluate_ppa(rtl_files, item.top, out_dir / "eval" / "chosen" / "ppa")
+                ppa_chosen = evaluate_ppa(rtl_files, item.top, eval_root / "chosen" / "ppa")
 
     bench_pass_any = bench_pass_chosen or any(
         bool(c.get("bench_eval", {}).get("ok")) for c in candidates_info.values()
     )
+    return {"rep": rep, "auto_decs": auto_decs, "candidates": candidates_info, "eval_root": Path(eval_root),
+            "bench_pass_chosen": bench_pass_chosen, "bench_pass_any": bench_pass_any, "ppa_chosen": ppa_chosen}
 
-    result = BenchResult(
-        benchmark=item.benchmark,
-        id=item.id,
-        category=item.category,
-        top=item.top,
-        spec_gate_ok=True,
-        spec_errors=[],
-        pipeline_status=rep.get("status", "failed"),
-        chosen=chosen,
-        agent_runs=spec_agent_runs + int(rep.get("agent_runs", 0)),
-        minutes=round((time.monotonic() - t0) / 60, 2),
-        auto_approvals=auto_decs,
-        review_codes=sorted({x["code"] for x in rep.get("review", [])}),
-        candidates=candidates_info,
-        bench_pass_chosen=bench_pass_chosen,
-        bench_pass_any=bench_pass_any,
-        ppa_chosen=ppa_chosen,
-    )
-    res_file.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    return result
+
+def ext_fix_trigger(item: BenchItem, scored: dict[str, Any]) -> str | None:
+    """외부 TB 보정이 필요한 경우: 외부 TB를 통과한 후보가 없음(external_fail) 또는 통과한 후보를 파이프라인이 고르지 못함(internal_mismatch).
+    외부 TB 채점(iverilog)이 아니거나, 채점까지 간 후보가 없거나(근거가 없음), 할당량으로 멈췄으면 하지 않는다."""
+    if item.eval.kind != "iverilog" or scored["bench_pass_chosen"] or scored["rep"].get("status") == "paused_quota":
+        return None
+    if scored["bench_pass_any"]:
+        return "internal_mismatch"
+    if any(c["bench_eval"].get("stage") for c in scored["candidates"].values()):
+        return "external_fail"
+    return None
+
+
+def _ext_fix_spec(item: BenchItem, rdir: Path, trigger: str, spec_path: Path, out_dir: Path, scored: dict[str, Any],
+                  roles: roles_mod.Roles, isolate: bool) -> tuple[Path | None, list[dict], list[str], int]:
+    """외부 TB 결과로 SPEC을 고친다. 이미 고친 SPEC이 있으면(재개) 다시 만들지 않는다."""
+    done = rdir / "spec" / "spec.md"
+    if done.exists():
+        cj = rdir / "spec" / "changes.json"
+        return done, json.loads(cj.read_text(encoding="utf-8")) if cj.exists() else [], [], 0
+    l1_dir = out_dir / "spec" / "l1_extract"
+    if (l1_dir / "top.l1.json").exists():
+        top_l1 = json.loads((l1_dir / "top.l1.json").read_text(encoding="utf-8"))
+        tables = (l1_dir / "tables.md").read_text(encoding="utf-8")
+    else:   # --spec-dir로 받은 SPEC에 추출 결과가 없을 때
+        top_l1, tables, _ = extract_header_l1(item, rdir / "l1_extract")
+        l1_dir = rdir / "l1_extract"
+    header_text = (l1_dir / "header.sv").read_text(encoding="utf-8")
+    eval_root = scored["eval_root"]
+    cands: dict[str, dict[str, Any]] = {}
+    for ck, c in scored["candidates"].items():
+        if not c["bench_eval"].get("stage"):
+            continue
+        cands[ck] = {"rtl": sorted((eval_root / ck / "rtl").glob("*.sv")),
+                     "result": {"pipeline_ok": c["pipeline_ok"], **c["bench_eval"]},
+                     "logs": [f for f in (eval_root / ck / "tb" / "compile.log", eval_root / ck / "tb" / "sim.log") if f.exists()]}
+    rep = scored["rep"]
+    internal = {"pipeline_status": rep.get("status"), "chosen": rep.get("chosen"),
+                "passing_candidates": [ck for ck, c in scored["candidates"].items() if c["bench_eval"].get("ok")],
+                "review": [{"code": r["code"], "message": r["message"]} for r in rep.get("review", [])]}
+    tb_dir = ext_fix.tb_bundle(item, rdir / "tb", _prepare_iverilog_tb)
+    new_spec, changes, errs, res = ext_fix.revise_spec(item, rdir / "spec", trigger, spec_path, top_l1, tables, header_text,
+                                                       tb_dir, cands, internal, roles, isolate=isolate)
+    return new_spec, changes, errs, res.attempts
 
 
 def _strip_code_fences(text: str) -> str:

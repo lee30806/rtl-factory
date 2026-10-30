@@ -424,6 +424,8 @@ class Run:
         for a in assumptions:   # 모듈 안의 배분만 정한 가정은 Architect 기록(tree)에만 남긴다
             if architect.needs_review(a):
                 self.review("ASSUMPTION", _assumption(a), "architect", "architect")
+                if "재검토" in _assumption(a):
+                    self.review("SPEC_REVIEW", _assumption(a), "architect", "architect")
         lib = {n: Module(c) for n, c in children.items()} | {top_ir["module"]: Module(top_ir)}
         tree = {"top": top_ir, "children": children, "frozen": frozen_scope(lib), "assumptions": assumptions,
                 "contracts": architect.read_contracts(Path(res.workdir))}
@@ -673,6 +675,14 @@ class Run:
                 self.save_mod(keys[m], sts[m])
         for st in sts.values():
             st.setdefault("arbiter", []).append(verdict)
+            if ares.ok:
+                st["last_arbiter"] = {
+                    "verdict": verdict,
+                    "reqs": vj.get("reqs"),
+                    "reason": vj.get("reason"),
+                    "proposal": vj.get("proposal"),
+                    "verifier": v["verifier"],
+                }
         if verdict == "test_wrong":
             ff = (rep["report"] or {}).get("first_failure") or {}
             # 같은 실패: 같은 Verifier, 같은 테스트, 같은 검사 (사이클과 값은 후보마다 다를 수 있음)
@@ -700,9 +710,27 @@ class Run:
             ids = sts[mods[0]].get("pending_ids", []) if sts[mods[0]]["status"] == "waiting_approval" else []
             save_all(status="waiting_approval", pending=pid, pending_ids=ids + [pid])
         elif verdict == "spec_ambiguous":
-            self.review("SPEC_AMBIGUOUS", f"{gname} 후보 {c}: Verifier 사이 해석이 갈림" if not claim else
-                        f"{gname} 후보 {c}: Repair의 L1 변경 요청에 대해 SPEC이 모호함", str(ares.workdir), "arbiter")
-            save_all(status="waiting_approval")
+            if ares.ok and vj.get("proposal"):
+                ff = (rep["report"] or {}).get("first_failure") or {}
+                key = json.dumps(["spec_ambiguous", v["verifier"], (rep["report"] or {}).get("test") or ff.get("test"), ff.get("check"),
+                                  ff.get("property") or ff.get("stream") or ff.get("bundle") or ff.get("message")], ensure_ascii=False)
+                amb_reason = f"[SPEC 모호성/충돌 수정 사유] {vj.get('reason')}"
+                amb_prop = f"SPEC이 모호하거나 정하지 않은 사항이므로 이 RTL 후보의 동작도 허용하도록 참조 모델/테스트를 완화·수정하세요: {vj.get('proposal')}"
+                item = {"kind": "expectation_change", "spec_ambiguous": True, "verifier": v["verifier"], "group": gname, "mods": mods,
+                        "c": c, "reqs": vj.get("reqs"), "reason": amb_reason, "proposal": amb_prop,
+                        "first_failure": (rep["report"] or {}).get("first_failure"), "group_key": key,
+                        "arbiter_dir": str(ares.workdir), **({"repair_claim": claim} if claim else {}),
+                        **({"repeated_failure": repeated} if repeated else {})}
+                joined = self.join_pending(item, key)
+                pid = joined or self.add_pending(item)
+                self.review("SPEC_AMBIGUOUS", f"{gname} 후보 {c}: SPEC 모호성 판정 (수정 사유: {str(vj.get('reason', ''))[:200]}) → 테스트 완화 제안 {pid}",
+                            str(ares.workdir), "arbiter", pending=pid)
+                ids = sts[mods[0]].get("pending_ids", []) if sts[mods[0]]["status"] == "waiting_approval" else []
+                save_all(status="waiting_approval", pending=pid, pending_ids=ids + ([pid] if pid not in ids else []))
+            else:
+                self.review("SPEC_AMBIGUOUS", f"{gname} 후보 {c}: Verifier 사이 해석이 갈림" if not claim else
+                            f"{gname} 후보 {c}: Repair의 L1 변경 요청에 대해 SPEC이 모호함", str(ares.workdir), "arbiter")
+                save_all(status="waiting_approval")
         return verdict
 
     def candidate_loop(self, c: int, mods: list[str], tree: dict, tbs: list[str]) -> dict[str, dict]:
@@ -818,7 +846,22 @@ class Run:
             failure = self.failure_report(lib, top_ir["module"], fail_v) if failed else {"classified": vres["e1"], "report": None}
             if any(x.get("type") == "tb_error" for x in failure["classified"]) and not any(
                     x.get("type") in ("sim_mismatch", "sim_hang") for x in failure["classified"]):
-                self.review("TB_ERROR", f"{gname} 후보 {c}: 테스트 실행 오류 (Verifier가 고쳐야 함)", fail_v.get("out", ""))
+                tb_msg = fail_v["findings"][0]["message"] if fail_v.get("findings") else "TB 실행 오류"
+                self.review("TB_ERROR", f"{gname} 후보 {c}: 테스트 실행 오류 (Verifier가 고쳐야 함: {tb_msg[:200]})", fail_v.get("out", ""))
+                if failed and fail_v.get("verifier") is not None and fail_v["verifier"] not in skip and self.state.get("tb_rev", 0) < 3:
+                    key = json.dumps(["tb_error", fail_v["verifier"], tb_msg[:120]], ensure_ascii=False)
+                    # 실행 오류는 SPEC 해석 문제가 아니라 근거 요구사항이 없다
+                    item = {"kind": "expectation_change", "tb_error": True, "verifier": fail_v["verifier"], "group": gname,
+                            "mods": mods, "c": c, "reqs": [],
+                            "reason": f"[TB 실행 오류 수정 사유] 테스트벤치 실행 중 예외가 발생함: {tb_msg}",
+                            "proposal": "테스트 코드(test.py)에서 발생한 실행 오류(예: Block Top L1에 없는 내부 신호 직접 참조, 잘못된 핸들/인자 접근 등)를 제거하고 동결된 L1 포트와 하니스만 사용하도록 수정하세요.",
+                            "first_failure": (failure.get("report") or {}).get("first_failure") or {"check": "tb_error", "message": tb_msg},
+                            "group_key": key}
+                    joined = self.join_pending(item, key)
+                    pid = joined or self.add_pending(item)
+                    ids = sts[mods[0]].get("pending_ids", []) if sts[mods[0]]["status"] == "waiting_approval" else []
+                    save_all(status="waiting_approval", pending=pid, pending_ids=ids + ([pid] if pid not in ids else []))
+                    break
                 save_all(status="failed", reason="TB 실행 오류")
                 break
             pin = sts[mods[0]].get("lead_repair")   # lead가 고칠 모듈을 지정함: 그 모듈의 Repair만, 형제 지목 금지
@@ -834,8 +877,9 @@ class Run:
                     "siblings": {n: children[n] for n in mods if n != mod},
                     "contracts": architect.contracts_for(tree.get("contracts", []), top_ir, mod)}
                 n = _seq(st)
+                mod_failure = {**failure, "arbiter_verdict": st["last_arbiter"]} if st.get("last_arbiter") else failure
                 rres = self.agent("repair", repair.make_task(f"repair/{mod}/c{c}/r{n}{self.arch_tag()}", st["ir"],
-                                                             self.spec_path, failure, st["history"], block, lead=pin),
+                                                             self.spec_path, mod_failure, st["history"], block, lead=pin),
                                   repair.check(st["ir"], siblings=set(block["siblings"]) if block else None, pinned=bool(pin)))
                 st["repairs"] += 1
                 st["repair_seq"] = n + 1
@@ -888,6 +932,15 @@ class Run:
                 new = apply(st["ir"], patches)
                 h = ir_hash(new.ir)
                 if h in st["hashes"]:
+                    if failed and not single and sig not in sts[mods[0]].get("repeat_arbitrated", []):
+                        save_all(repeat_arbitrated=sts[mods[0]].get("repeat_arbitrated", []) + [sig])
+                        repeated = {"repairs": st["repairs"], "modules": mods,
+                                    "note": f"Repair가 같은 IR로 되돌아와(진동) 중단하기 전에 Arbiter가 테스트/SPEC을 판정함"}
+                        verdicts = [self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, v, f"r{total}/osc", repeated=repeated)
+                                    for v in failed if v["verifier"] not in skip]
+                        if any(x in ("test_wrong", "spec_ambiguous") for x in verdicts):
+                            stop = {}
+                            break
                     self.review("OSCILLATION", f"{mod} 후보 {c}: 같은 IR로 돌아옴 (진동). 사람에게 넘김", rres.workdir)
                     stop = dict(status="failed", reason=f"{mod}: 진동")
                     break
