@@ -105,6 +105,7 @@ def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
         f"- **외부 TB 보정 뒤 (chosen)**: {summary.get('counts', {}).get('bench_pass_chosen_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_chosen_final', 0) * 100:.1f}%)"
         f" — 보정한 문제 {summary.get('counts', {}).get('ext_fix_items', 0)}개. 외부 TB를 근거로 SPEC을 고친 결과라 pass@1이 아님",
         f"- **외부 TB 보정 뒤 (any candidate)**: {summary.get('counts', {}).get('bench_pass_any_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_any_final', 0) * 100:.1f}%)",
+        f"- **시뮬레이션 모델 (합성, PPA 없음)**: {sum(r.sim_model for r in results)}/{summary['total']}",
         "",
         "## Per-Item Results",
         "",
@@ -118,7 +119,7 @@ def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
         cells = ppa.get("cells", "-")
         loops = ppa.get("comb_loops", "-")
         lines.append(
-            f"| `{r.id}` | `{r.top}` | {'PASS' if r.spec_gate_ok else 'FAIL'} | `{r.pipeline_status}` "
+            f"| `{r.id}`{' (시뮬레이션 모델)' if r.sim_model else ''} | `{r.top}` | {'PASS' if r.spec_gate_ok else 'FAIL'} | `{r.pipeline_status}` "
             f"| {'PASS' if r.bench_pass_chosen else 'FAIL'} | {'PASS' if c0_ok else 'FAIL'} "
             f"| {'PASS' if c1_ok else ('-' if 'c1' not in r.candidates else 'FAIL')} | {_ext_cell(r)} | {cells} | {loops} | {r.agent_runs} |"
         )

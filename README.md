@@ -120,6 +120,7 @@ IR은 모듈당 JSON 파일 하나입니다 (스키마: `schema/ir.schema.json`)
 | --- | --- | --- |
 | Python | 3.11 이상 | 전체 |
 | Verilator | 5.052에서 확인 | E1 lint, E2 sim, 이식 R4/R6 원본 시뮬레이션 |
+| Icarus Verilog | 13.0에서 확인 | 시뮬레이션 모델 경로의 판정, 벤치마크 외부 TB 채점 |
 | coding agent CLI | Claude Code(기본). agy 등은 설정으로 | 에이전트 실행 |
 | macOS `sandbox-exec` | | 에이전트 작업 디렉터리 격리 (없으면 격리할 수 없다는 오류. 시험용 `--no-isolate`만 예외) |
 

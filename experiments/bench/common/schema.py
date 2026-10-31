@@ -81,6 +81,7 @@ class BenchResult:
     ext_fix: list[dict[str, Any]] = field(default_factory=list)
     bench_pass_chosen_final: bool = False                # 마지막 실행에서 선택된 후보의 외부 TB 통과
     bench_pass_any_final: bool = False                   # 어느 실행이든 외부 TB를 통과한 후보가 있음
+    sim_model: bool = False                              # 시뮬레이션 모델 경로로 처리함 (합성, PPA 없음)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -163,6 +163,10 @@ def extract_candidate_rtl(run_dir: Path, candidate_idx: int, out_rtl_dir: Path, 
     if not st_path.exists():
         return None
     st = json.loads(st_path.read_text(encoding="utf-8"))
+    if st.get("sim_model"):
+        models = sorted((run_dir / "sim_model" / f"c{candidate_idx}").glob("*.sv"))
+        out_rtl_dir.mkdir(parents=True, exist_ok=True)
+        return [Path(shutil.copy(m, out_rtl_dir)) for m in models] or None
     tree = st.get("steps", {}).get("architect")
     if not tree or not tree.get("top"):
         return None
@@ -573,6 +577,7 @@ def run_bench_item(
         ext_fix=rounds,
         bench_pass_chosen_final=last["bench_pass_chosen"],
         bench_pass_any_final=first["bench_pass_any"] or any(r.get("bench_pass_any") for r in rounds),
+        sim_model=bool(rep.get("sim_model")),
     )
     res_file.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -615,11 +620,11 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
         ppa_info: dict[str, Any] | None = None
         if sv_files:
             bench_eval = evaluate_rtl(item, sv_files, eval_root / ckey / "tb")
-            if bench_eval.get("ok") or pipe_ok:
+            if (bench_eval.get("ok") or pipe_ok) and not rep.get("sim_model"):
                 ppa_info = evaluate_ppa(sv_files, item.top, eval_root / ckey / "ppa")
 
         candidates_info[ckey] = {
-            "lang": lang,
+            "lang": "sim_model" if rep.get("sim_model") else lang,
             "pipeline_ok": pipe_ok,
             "repairs": repairs,
             "py_equiv": pe,

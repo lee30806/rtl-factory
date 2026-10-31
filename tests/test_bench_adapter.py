@@ -511,3 +511,150 @@ def test_run_bench_item_ext_fix_keeps_first_result(tmp_path: Path, monkeypatch):
     s = write_summary([res], tmp_path / "out")
     assert s["counts"]["bench_pass_chosen"] == 0 and s["counts"]["bench_pass_chosen_final"] == 1
     assert "외부 TB 보정 뒤" in (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+
+
+# -- 시뮬레이션 모델 경로 --
+TICK_L1 = {"module": "tick", "role": "block_top", "params": [{"name": "HALF", "type": "int", "default": "5"}], "domains": [],
+           "ports": [{"name": "o", "dir": "output", "type": "logic", "domain": None}]}
+TICK_MODEL = "`timescale 1ns/1ps\nmodule tick #(parameter HALF = 5) (output logic o);\n  initial o = 1'b0;\n  always #HALF o <= ~o;\nendmodule\n"
+TICK_STUCK = "`timescale 1ns/1ps\nmodule tick #(parameter HALF = 5) (output logic o);\n  initial o = 1'b0;\nendmodule\n"
+TICK_TB = """`timescale 1ns/1ps
+module tick_tb;
+  logic o;
+  tick dut(.o(o));
+  initial begin
+    #2; if (o !== 1'b0) begin $display("TEST FAILED: t=2 o=%b", o); $finish; end
+    #5; if (o !== 1'b1) begin $display("TEST FAILED: t=7 o=%b", o); $finish; end
+    #5; if (o !== 1'b0) begin $display("TEST FAILED: t=12 o=%b", o); $finish; end
+    $display("TEST PASSED"); $finish;
+  end
+endmodule
+"""
+
+
+def _tick_spec(tmp_path: Path, kind: str = "- 구현 종류: 시뮬레이션 모델") -> Path:
+    from pipeline.importer import spec_tables
+    t = spec_tables.tables_md(TICK_L1)
+    p = tmp_path / "tick_spec.md"
+    p.write_text(f"""# tick SPEC
+
+## 1. 목적과 범위
+시간에 따라 토글하는 출력.
+
+{t}
+
+## 5. 기능 요구사항
+- FR-01 (필수) 출력 o는 시각 0에 0이고 HALF 시간마다 반전한다.
+
+## 6. 타이밍과 성능
+- TIM-01 (필수) 출력 o의 변화 간격은 HALF 시간이다.
+
+## 7. 예외와 코너 케이스
+- EXC-01 미정의: HALF가 0일 때의 출력 o
+
+## 8. 예시 시나리오
+### SC-01 정상: 토글
+| 입력(시각) | 기대 출력 |
+| --- | --- |
+| 0 | 0 |
+
+### SC-02 코너: 두 번째 토글
+| 입력(시각) | 기대 출력 |
+| --- | --- |
+| 10 | 0 |
+
+## 9. 구현 제약
+{kind}
+
+## 10. 열린 질문
+- 없음
+""", encoding="utf-8")
+    return p
+
+
+def test_spec_gate_requires_kind_for_block_without_inputs(tmp_path: Path):
+    from pipeline.spec import check
+    spec = load_spec(_tick_spec(tmp_path, ""))
+    assert "NO_INPUT_KIND" in [i["code"] for i in check.run(spec)["issues"]]
+    assert not check.is_sim_model(spec)
+    spec = load_spec(_tick_spec(tmp_path))
+    res = check.run(spec)
+    assert res["gate"] == "pass", res["issues"]
+    assert check.is_sim_model(spec)
+    assert not check.is_sim_model(load_spec(G / "block_spec.md"))
+    # 출력 포트만 있어도 클럭 도메인이 있으면 입력이 있는 블록이다
+    clocked = {"ports": TICK_L1["ports"], "domains": [{"name": "sys", "clock": "clk"}]}
+    assert check.check_impl_kind(load_spec(_tick_spec(tmp_path, "")), clocked) == []
+
+
+def test_sim_model_gates(tmp_path: Path):
+    from pipeline.agents import sim_model as sm
+    (tmp_path / "out").mkdir()
+    m, tb = tmp_path / "out" / "tick.sv", tmp_path / "out" / "tick_tb.sv"
+    m.write_text(TICK_MODEL, encoding="utf-8")
+    assert sm.check_model(TICK_L1)(tmp_path) == []
+    m.write_text("module tick(output logic x); endmodule\n", encoding="utf-8")
+    errs = " ".join(sm.check_model(TICK_L1)(tmp_path))
+    assert "포트" in errs and "파라미터" in errs and "timescale" in errs
+
+    tb.write_text(TICK_TB, encoding="utf-8")
+    assert sm.check_tb(TICK_L1)(tmp_path) == []
+    # 아무것도 검사하지 않는 테스트벤치와 끝나지 않는 테스트벤치는 가짜 모델에서 걸린다
+    tb.write_text('`timescale 1ns/1ps\nmodule tick_tb; logic o; tick d(.o(o));\n'
+                  'initial begin $display("TEST PASSED"); if (0) $display("TEST FAILED"); $finish; end endmodule\n', encoding="utf-8")
+    assert "통과함" in " ".join(sm.check_tb(TICK_L1)(tmp_path))
+    tb.write_text(TICK_TB.replace("logic o;", "logic o, x;").replace("$display(\"TEST PASSED\"); $finish;", "$display(\"TEST PASSED\");")
+                  .replace("#2; if", "#2; forever begin #1 x = 0; end\n    if"), encoding="utf-8")
+    sm.SIM_TIMEOUT_S, keep = 2, sm.SIM_TIMEOUT_S
+    try:
+        assert "timeout" in " ".join(sm.check_tb(TICK_L1)(tmp_path))
+    finally:
+        sm.SIM_TIMEOUT_S = keep
+
+
+def test_run_sim_model_path_repairs_and_skips_ir(tmp_path: Path):
+    """Architect, IR 없이 테스트벤치와 동작 모델만 돌고, 실패 로그로 고친다."""
+    from pipeline.scheduler.run import Run
+    from experiments.bench.common.runner import extract_candidate_rtl
+    spec = _tick_spec(tmp_path)
+    files = {"Verifier|시뮬레이션 모델": {"out/tick_tb.sv": TICK_TB},
+             "Author|failures.json": {"out/tick.sv": TICK_MODEL},
+             "Author|시뮬레이션 모델": {"out/tick.sv": TICK_STUCK}}
+    run_dir = tmp_path / "run"
+    rep = Run(run_dir, spec, _fake_roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "pass" and rep["sim_model"], rep
+    assert rep["chosen"] == {"tick": 0}
+    assert rep["candidates"]["tick/c0"]["repairs"] == 1 and rep["candidates"]["tick/c1"]["status"] == "pass"
+    assert "SIM_MODEL" in {r["code"] for r in rep["review"]}
+    assert "architect" not in json.loads((run_dir / "state.json").read_text(encoding="utf-8"))["steps"]
+    assert (run_dir / "rtl" / "tick.sv").read_text(encoding="utf-8") == TICK_MODEL
+    assert [p.name for p in extract_candidate_rtl(run_dir, 1, tmp_path / "c1")] == ["tick.sv"]
+
+
+def test_run_sim_model_fails_when_repairs_run_out(tmp_path: Path):
+    from pipeline.scheduler.run import Run
+    files = {"Verifier|시뮬레이션 모델": {"out/tick_tb.sv": TICK_TB}, "Author|시뮬레이션 모델": {"out/tick.sv": TICK_STUCK}}
+    rep = Run(tmp_path / "run", _tick_spec(tmp_path), _fake_roles(tmp_path, files), isolate=False).execute()
+    assert rep["status"] == "failed" and not rep["chosen"]
+    assert rep["candidates"]["tick/c0"]["repairs"] == 2 and "TEST FAILED" in rep["candidates"]["tick/c0"]["reason"]
+
+
+def test_bench_sim_model_scores_without_ppa(tmp_path: Path):
+    """외부 TB가 출력 변화 시각에 값을 읽어도 비블로킹 대입 모델은 바뀌기 전 값을 보아 통과한다."""
+    from experiments.bench.common.runner import run_and_score
+    tb = tmp_path / "ext_tb.v"
+    tb.write_text("""module ext_tb;
+  wire o; reg res = 0; integer e = 0;
+  tick d(.o(o));
+  initial begin
+    repeat (10) begin #5; e = (res == o) ? e : e + 1; res = res + 1; end
+    if (e == 0) $display("Your Design Passed"); else $display("failures %d", e);
+    $finish;
+  end
+endmodule
+""", encoding="utf-8")
+    item = BenchItem("rtllm", "tick", "combinational", "tick", "p", "module tick(output o); endmodule", eval=EvalSpec(tb_files=[str(tb)]))
+    files = {"Verifier|시뮬레이션 모델": {"out/tick_tb.sv": TICK_TB}, "Author|시뮬레이션 모델": {"out/tick.sv": TICK_MODEL}}
+    scored = run_and_score(item, tmp_path / "run", tmp_path / "eval", _tick_spec(tmp_path), _fake_roles(tmp_path, files), [], isolate=False)
+    assert scored["bench_pass_chosen"] and scored["ppa_chosen"] is None
+    assert scored["candidates"]["c0"]["lang"] == "sim_model" and scored["candidates"]["c0"]["ppa"] is None

@@ -10,7 +10,10 @@
 - 리셋 문장(경고): 동기 리셋 도메인에서 "리셋이 1인 동안/사이클에 출력이 ~"처럼 리셋이 걸린 그 사이클을 요구하는 문장
   (P8 CRC-E01, P8a COBS-E01·AFIFO-E02: 레지스터 출력은 리셋을 본 다음 사이클에야 바뀜). 리셋 도메인이 둘 이상(다른
   클럭)인데 모든 리셋을 함께 거는 사용 조건 문장이 없음 (P11 axis_async_fifo: 한쪽 리셋 동작은 두 클럭 위상에 따라 달라짐)
-- 리셋 없는 도메인(오류): 그 도메인의 출력에 초기값을 정한 문장 (RTLLM right_shifter: IR에 initial이 없어 만족할 수 없음)
+- 리셋 없는 도메인(오류): 그 도메인의 출력에 초기값을 정한 문장 (RTLLM right_shifter: IR에 initial이 없어 만족할 수 없음).
+  시뮬레이션 모델은 IR을 쓰지 않으므로 예외
+- 구현 종류(오류): 입력 포트가 없는 블록은 9절에 `구현 종류: 합성` 또는 `구현 종류: 시뮬레이션 모델`을 밝힘.
+  입력이 없으면 합성 회로는 상수만 낼 수 있어 시간에 따라 바뀌는 출력은 시뮬레이션 모델이다
 - 레지스터 맵을 주면 레지스터 검사와 SPEC 대조 (`regmap.py`)
 검토 항목으로 올리는 것: 미정의 동작(7번 섹션의 "미정의"), 열린 질문(10번 섹션), 위 검사의 경고,
 LLM 검사의 질문(`--llm`, llm_check.py)
@@ -30,6 +33,7 @@ from pipeline.spec.parse import TEMPLATE, Spec, load
 
 PROTOCOLS = {"valid_ready"}   # 임시 표준 (experiments/p0/substitutes.md). 사내 목록을 받으면 바꿈
 LEVELS = {"필수", "권장", "허용", "미정의"}
+KIND_RE = re.compile(r"^\s*-\s*구현 종류:\s*(합성|시뮬레이션 모델)\s*$")
 INIT_WORDS = re.compile(r"초기\s*(?:값|상태|화\s*시점)|초깃값|시뮬레이션\s*시작|전원\s*인가|power[- ]on|\binitial\b", re.I)
 
 
@@ -136,6 +140,26 @@ def check_scenarios(spec: Spec) -> list[SpecIssue]:
     return out
 
 
+def impl_kind(spec: Spec) -> str | None:
+    """9절의 구현 종류 줄."""
+    sec = spec.sections.get(9)
+    return next((m.group(1) for _, ln in (sec.lines if sec else []) if (m := KIND_RE.match(ln))), None)
+
+
+def is_sim_model(spec: Spec) -> bool:
+    return impl_kind(spec) == "시뮬레이션 모델"
+
+
+def check_impl_kind(spec: Spec, ir: dict | None) -> list[SpecIssue]:
+    if ir is None or impl_kind(spec) or ir["domains"]:   # 클럭, 리셋은 도메인에 있어 포트 목록에 없다
+        return []
+    if any(s["dir"] == "input" for p in ir["ports"] for s in (p["signals"] if "bundle" in p else [p])):
+        return []
+    return [SpecIssue("NO_INPUT_KIND", "error", _name(spec),
+                      "입력 포트가 없는 블록임. 9절에 `- 구현 종류: 시뮬레이션 모델`(시간에 따라 바뀌는 출력) 또는 "
+                      "`- 구현 종류: 합성`(상수 출력)을 밝힌다")]
+
+
 def check_resets(spec: Spec, ir: dict | None) -> list[SpecIssue]:
     if ir is None:
         return []
@@ -158,7 +182,7 @@ def check_resets(spec: Spec, ir: dict | None) -> list[SpecIssue]:
     norst = {d["name"] for d in ir["domains"] if not d.get("reset")}
     outs = [s["name"] for p in ir["ports"] for s in (p["signals"] if "bundle" in p else [p])
             if s["dir"] == "output" and (s.get("domain") or p.get("domain")) in norst]
-    for r in reqs:
+    for r in [] if is_sim_model(spec) else reqs:
         if INIT_WORDS.search(r.text) and (hit := [o for o in outs if _word(o).search(r.text)]):
             out.append(SpecIssue("INIT_NO_RESET", "error", f"{f}:{r.line}",
                                  f"{r.id}: 리셋이 없는 도메인의 출력({', '.join(hit)})에 초기값을 정함. 리셋 없이는 초기값을 "
@@ -186,7 +210,7 @@ def run(spec: Spec, regmap: Path | None = None, array_depth: dict[str, str] | No
     """llm_review: llm_check.py가 낸 질문 (검토 항목에 그대로 더함)."""
     issues = check_sections(spec)
     ir, l1 = check_l1(spec)
-    issues += l1 + check_requirements(spec) + check_ports(spec, ir) + check_scenarios(spec) + check_resets(spec, ir)
+    issues += l1 + check_requirements(spec) + check_ports(spec, ir) + check_scenarios(spec) + check_resets(spec, ir) + check_impl_kind(spec, ir)
     if regmap:
         from pipeline.spec import regmap as rm
 

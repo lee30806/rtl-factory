@@ -15,6 +15,9 @@
              모호하면 검토 항목, rtl_wrong이면 L1 변경 요청을 검토 항목으로 남기고 후보를 멈춤)
     → 묶음 선택(모든 모듈 통과, Repair 적음, lint 적음)과 Author 후보 간 차분 검사 → 통합(E1, E2) → 최종 보고서
 
+SPEC 9절이 `구현 종류: 시뮬레이션 모델`이면 위 대신 Verifier 테스트벤치 → Author 동작 모델 → iverilog 판정 → Author 수정(상한)만
+돈다 (`agents/sim_model.py`). IR, 합성, Architect는 쓰지 않는다.
+
 상태는 단계마다 `state.json`에 저장한다. 병렬로 도는 후보와 에이전트 작업은 각자 파일(`modules/`, `tasks/`)에 저장한다. 강제로 멈춘 뒤 같은 명령으로 다시 실행하면 끝난 단계와 끝난 에이전트 작업은
 건너뛰고 이어서 실행한다. 에이전트 작업 디렉터리는 저장소 밖에 두고 서로 격리한다.
 
@@ -28,13 +31,14 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from pipeline.agents import arbiter, architect, author, repair, roles as roles_mod, verifier
+from pipeline.agents import arbiter, architect, author, repair, roles as roles_mod, sim_model, verifier
 from pipeline.agents.task import RUNS, ROOT, QuotaExceeded, TaskResult, run_task
 from pipeline.classifier.classify import classify_findings
 from pipeline.emitter.sv import emit
@@ -1134,10 +1138,64 @@ class Run:
                                          "py_equiv": final["py_equiv"]})
         return final
 
+    def step_sim_model(self) -> None:
+        """시뮬레이션 모델 경로. 후보마다 모든 테스트벤치를 통과할 때까지 Author가 고친다 (repair_per_candidate 상한)."""
+        spec = load_spec(self.spec_path)
+        top_l1, _ = block_top_l1(spec)
+        top, l1_json = top_l1["module"], json.dumps(top_l1, ensure_ascii=False, indent=1)
+        self.review("SIM_MODEL", f"{top}은 시뮬레이션 모델이라 합성과 PPA 대상이 아님 (합성 RTL로 쓸 수 없음)", "9. 구현 제약")
+        tbs = []
+        for v in range(self.roles.counts.get("verifier", 1)):
+            name = f"sim_model/verifier/v{v}"
+            res = self.agent("verifier", sim_model.verifier_task(name, top, self.spec_path, l1_json), sim_model.check_tb(top_l1))
+            if res.ok:
+                tbs.append(Path(res.outputs[sim_model.tb_rel(top)]))
+        if not tbs:
+            self.state["status"] = "failed"
+            self.review("VERIFIER_FAILED", "쓸 수 있는 테스트벤치가 없음")
+            return
+        limit = self.roles.limits.get("repair_per_candidate", 3)
+        for c in range(self.roles.counts.get("author", 1)):
+            key, st = f"{top}/c{c}", self.mod_state(f"{top}/c{c}")
+            model, log = None, ""
+            for r in range(limit + 1):
+                name = f"sim_model/author/c{c}/r{r}"
+                task = sim_model.author_task(name, top, self.spec_path, l1_json, model, log) if r else \
+                    sim_model.author_task(name, top, self.spec_path, l1_json)
+                res = self.agent("author", task, sim_model.check_model(top_l1))
+                if not res.ok:
+                    st.update(status="author_failed", reason="; ".join(res.errors)[:500])
+                    break
+                model = Path(res.outputs[sim_model.model_rel(top)])
+                out = {f"tb{i}": sim_model.run_tb(model, tb, top, self.dir / "verify" / f"c{c}_r{r}_tb{i}") for i, tb in enumerate(tbs)}
+                st.update(repairs=r)
+                if all(x["ok"] for x in out.values()):
+                    dst = self.dir / "sim_model" / f"c{c}"
+                    dst.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(model, dst / f"{top}.sv")
+                    st.update(status="pass", reason=None)
+                    break
+                log = json.dumps(out, ensure_ascii=False, indent=1)
+                st.update(status="failed", reason=next(x["log"] for x in out.values() if not x["ok"])[-500:])
+            self.save_mod(key, st)
+        passed = sorted((v["repairs"], k) for k, v in self.modules().items() if v["status"] == "pass")
+        if not passed:
+            self.state["status"] = "failed"
+            self.review("MODULE_FAILED", f"{top} 시뮬레이션 모델이 테스트벤치를 통과하지 못함", "sim_model")
+            return
+        c = int(passed[0][1].rsplit("/c", 1)[1])
+        (self.dir / "rtl").mkdir(exist_ok=True)
+        shutil.copy(self.dir / "sim_model" / f"c{c}" / f"{top}.sv", self.dir / "rtl" / f"{top}.sv")
+        self.state["chosen"], self.state["status"] = {top: c}, "pass"
+
     def execute(self) -> dict:
         try:
             if not self.step_spec():
                 self.state["status"] = "spec_rejected"
+                return self.report()
+            if spec_check.is_sim_model(load_spec(self.spec_path)):
+                self.state["sim_model"] = True
+                self.step_sim_model()
                 return self.report()
             tree = self.step_architect()
             if tree is None:
@@ -1175,6 +1233,7 @@ class Run:
     def report(self) -> dict:
         st = self.state
         rep = {"status": st["status"], "spec": st["spec"], "agent_runs": st["agent_runs"], "chosen": st.get("chosen"),
+               "sim_model": bool(st.get("sim_model")),
                "candidates": {k: {x: v.get(x) for x in ("status", "repairs", "lint", "reason", "arbiter")}
                               for k, v in self.modules().items()},
                "integration": st["steps"].get("integration"), "pending": st.get("pending", []),
