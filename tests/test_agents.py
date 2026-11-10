@@ -211,6 +211,12 @@ def test_claude_code_session_limit_is_quota(tmp_path):
         run_task(_cfg("quota_cc"), _task(), tmp_path / "w", retries=1)
 
 
+def test_claude_code_hour_limit_is_quota(tmp_path):
+    """시간 단위 한도 안내도 에이전트 실패가 아니라 사용량 한도로 멈춰야 한다."""
+    with pytest.raises(QuotaExceeded):
+        run_task(_cfg("quota_cc_hours"), _task(), tmp_path / "w", retries=1)
+
+
 def test_architect_rejects_packed_word_between_modules():
     """하위 모듈끼리 여러 필드를 묶은 워드를 넘기면 거부한다. 자식 파라미터 하나에 합을 바인딩해 숨겨도 잡는다 (P8a async_fifo)."""
     from pipeline.agents.architect import packed_ports
@@ -270,3 +276,16 @@ def test_author_gets_contracts():
     t = author.make_task("author/pkt_parser/c0", l1, ROOT / "IMPLEMENTATION.md", contracts=c)
     assert json.loads(t.inputs["contracts.json"])["contracts"] == c and "contracts.json" in t.text
     assert "contracts.json" not in author.make_task("author/pkt_parser/c0", l1, ROOT / "IMPLEMENTATION.md").inputs
+
+
+def test_emit_lib_uses_cell_for_external_and_reuse_cells(tmp_path):
+    """제공 셀과 같은 이름의 하위 모듈은 external(셀 파일)로 바뀌고, 방출 목록에는 셀 파일 하나만 들어간다."""
+    from pipeline.scheduler.run import cell_modules, emit_lib
+    cell = tmp_path / "data_mem.v"
+    cell.write_text("module data_mem(input clk, input [3:0] a, output [7:0] d);\n  assign d = 8'd0;\nendmodule\n")
+    assert cell_modules([cell]) == {"data_mem": cell.resolve()}
+    ext = {"module": "data_mem", "role": "external", "rtl_files": [str(cell)], "params": [], "domains": [],
+           "ports": [{"name": "clk", "dir": "input", "type": "logic"}, {"name": "a", "dir": "input", "type": "logic [3:0]"},
+                     {"name": "d", "dir": "output", "type": "logic [7:0]"}]}
+    files, _ = emit_lib({"data_mem": ext}, tmp_path / "rtl", [cell])
+    assert [Path(f).resolve() for f in files] == [cell.resolve()]

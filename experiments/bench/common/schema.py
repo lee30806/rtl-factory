@@ -11,6 +11,8 @@ class EvalSpec:
     tb_files: list[str] = field(default_factory=list)
     pass_pattern: str = "Your Design Passed|PASS"
     top_tb: str | None = None
+    lec_resets: list[dict[str, str]] = field(default_factory=list)   # yosys_lec: 첫 사이클에 걸 리셋 [{"port", "active"}]
+    lec_depth: int = 30                                               # yosys_lec: 플롭이 있을 때 BMC 깊이
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EvalSpec:
@@ -19,6 +21,8 @@ class EvalSpec:
             tb_files=list(d.get("tb_files", [])),
             pass_pattern=d.get("pass_pattern", "Your Design Passed|PASS"),
             top_tb=d.get("top_tb"),
+            lec_resets=list(d.get("lec_resets", [])),
+            lec_depth=int(d.get("lec_depth", 30)),
         )
 
 
@@ -82,6 +86,8 @@ class BenchResult:
     bench_pass_chosen_final: bool = False                # 마지막 실행에서 선택된 후보의 외부 TB 통과
     bench_pass_any_final: bool = False                   # 어느 실행이든 외부 TB를 통과한 후보가 있음
     sim_model: bool = False                              # 시뮬레이션 모델 경로로 처리함 (합성, PPA 없음)
+    round_trip: list[dict[str, Any]] = field(default_factory=list)   # B5: R6 회차별 재생성 상태, 원본 비교, 판정, 등가 채점
+    lessons: list[str] = field(default_factory=list)     # 헤더 추출이 찾은, 사람이 확인할 결함 (헤더 지시문, 리셋 판정 충돌)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

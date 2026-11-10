@@ -658,3 +658,107 @@ endmodule
     scored = run_and_score(item, tmp_path / "run", tmp_path / "eval", _tick_spec(tmp_path), _fake_roles(tmp_path, files), [], isolate=False)
     assert scored["bench_pass_chosen"] and scored["ppa_chosen"] is None
     assert scored["candidates"]["c0"]["lang"] == "sim_model" and scored["candidates"]["c0"]["ppa"] is None
+
+
+def test_skip_verifier_sim_model(tmp_path: Path):
+    """skip_verifier=True이면 시뮬레이션 모델에서도 Verifier 에이전트를 호출하지 않고 외부 TB로 직접 검증·수리한다."""
+    from experiments.bench.common.runner import run_and_score
+    tb = tmp_path / "ext_tb.v"
+    tb.write_text("""`timescale 1ns/1ps
+module ext_tb;
+  wire o; reg res = 0; integer e = 0;
+  tick d(.o(o));
+  initial begin
+    repeat (10) begin #5; e = (res == o) ? e : e + 1; res = res + 1; end
+    if (e == 0) $display("Your Design Passed"); else $display("failures %d", e);
+    $finish;
+  end
+endmodule
+""", encoding="utf-8")
+    item = BenchItem("rtllm", "tick", "combinational", "tick", "p", "module tick(output o); endmodule", eval=EvalSpec(tb_files=[str(tb)]))
+    # Verifier 응답을 주지 않아도 skip_verifier=True이면 Author + 외부 TB만으로 통과하고, 첫 시도 실패 시 외부 TB 로그로 수리한다.
+    files = {
+        "Author|failures.json": {"out/tick.sv": TICK_MODEL},
+        "Author|시뮬레이션 모델": {"out/tick.sv": TICK_STUCK},
+    }
+    scored = run_and_score(item, tmp_path / "run", tmp_path / "eval", _tick_spec(tmp_path), _fake_roles(tmp_path, files), [],
+                           isolate=False, skip_verifier=True)
+    assert scored["bench_pass_chosen"]
+    # Verifier 2회가 생략되고 Author 2개 후보가 각각 초기 1회 + 수리 1회 = 총 4회만 실행됨
+    assert scored["rep"]["agent_runs"] == 4
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert "verifier" not in calls.lower()
+
+
+def test_skip_verifier_rtllm_pulse_detect_e2e(tmp_path: Path):
+    """skip_verifier=True이면 일반 RTL 파이프라인에서 Verifier 에이전트(v0, v1)를 생략하고 E2에서 외부 TB를 직접 실행한다."""
+    if not shutil.which("verilator") or not shutil.which("iverilog") or not shutil.which("yosys"):
+        pytest.skip("verilator/iverilog/yosys 필요")
+
+    pilot_item = materialize_builtin_pilot(tmp_path / "dataset")
+    fake_files = _pulse_detect_fake_files(tmp_path)
+    fake_files.pop("Verifier", None)  # Verifier 에이전트 응답 제거
+
+    roles = _fake_roles(tmp_path, fake_files)
+    res = run_bench_item(pilot_item, tmp_path / "out" / "pulse_detect", roles, isolate=False, auto_approve=True, skip_verifier=True)
+
+    assert res.spec_gate_ok
+    assert res.pipeline_status == "pass"
+    assert res.bench_pass_chosen
+    assert res.bench_pass_any
+    # SpecWriter(1) + Architect(1) + Author c0, c1(2) = 총 4회 (기존 6회에서 Verifier 2회 절감)
+    assert res.agent_runs == 4
+    st = json.loads((tmp_path / "out" / "pulse_detect" / "run" / "state.json").read_text(encoding="utf-8"))
+    assert st["steps"]["verifiers"] == ["external_tb"]
+
+
+
+def test_strip_to_header_conditional_directives_and_lessons():
+    """조건부 지시문은 중복을 지우지 않고 짝을 맞춘다. 모듈이 `ifdef 안에 있으면 닫아 주고 LESSON을 남긴다."""
+    from experiments.bench.common.to_spec import strip_to_header
+    lessons: list[str] = []
+    hdr = strip_to_header("`ifdef A\n`endif\n`ifdef B\n`endif\n`define W 8\n`define W 8\nmodule t(input a);\nendmodule\n", "t", lessons)
+    assert hdr.count("`ifdef") == hdr.count("`endif") == 2 and hdr.count("`define W 8") == 1
+    assert lessons == []
+    hdr = strip_to_header("`ifdef USE_T\nmodule t(input a);\nassign x = a;\nendmodule\n`endif\n", "t", lessons)
+    assert hdr.rstrip().endswith("endmodule\n`endif")
+    assert len(lessons) == 1 and "지시문 결함" in lessons[0]
+
+
+def test_reset_traits_follow_prompt_and_record_lesson():
+    """프롬프트가 동기 리셋을 명시하면 `!rst_n`이나 모듈 이름과 상관없이 동기로 쓰고, 이름 추정과 어긋나면 LESSON을 남긴다."""
+    from experiments.bench.common.to_spec import infer_reset_and_clock_traits as traits
+    lessons: list[str] = []
+    assert traits("Synchronous reset. if (!rst_n) q <= 0;", "clk", "rst_n", lessons=lessons) == ("pos", "low", False)
+    assert lessons == []
+    assert traits("Synchronous reset: if (!wrstn) clear.", "wclk", "wrstn", top="asyn_fifo", lessons=lessons) == ("pos", "low", False)
+    assert len(lessons) == 1 and "충돌" in lessons[0]
+    lessons.clear()
+    assert traits("dual clock FIFO", "wclk", "wrstn", top="asyn_fifo", lessons=lessons)[2] is True
+    assert len(lessons) == 1 and "추정" in lessons[0]
+    assert traits("always @(posedge clk or negedge rst_n)", "clk", "rst_n")[2] is True
+
+
+def test_reset_falling_edge_phrase_is_async_and_default_lesson():
+    """프롬프트의 "falling edge of reset signal B (brstn)"는 비동기 리셋이다 (RTLLM synchronizer). 언급이 없으면 동기 + LESSON."""
+    from experiments.bench.common.to_spec import infer_reset_and_clock_traits as traits
+    assert traits("On the positive edge of clock B (clk_b) or the falling edge of reset signal B (brstn), update.",
+                  "clk_b", "brstn")[2] is True
+    lessons: list[str] = []
+    assert traits("Counts up on every clock.", "clk", "rst_n", lessons=lessons)[2] is False
+    assert len(lessons) == 1 and "기본값" in lessons[0]
+
+
+def test_header_l1_does_not_read_reference_rtl(tmp_path: Path):
+    """헤더 추출은 정답 RTL을 읽지 않는다: 정답 파일이 없어도 같은 L1이 나온다 (엔진 간 공정 비교)."""
+    item = BenchItem(benchmark="rtllm", id="t", category="sequential", top="t", header_sv="module t(input clk, input rst_n, input a, output reg y);\nendmodule\n",
+                     prompt_text="On the rising edge of clk, y <= a. Synchronous reset when rst_n is low.",
+                     reference_rtl=[str(tmp_path / "missing_gold.v")])
+    l1, _, _ = extract_header_l1(item, tmp_path / "l1")
+    assert l1["domains"][0]["reset"]["async"] is False
+
+
+def test_dedupe_modules_keeps_first_definition():
+    from experiments.bench.adapters.chipverilog import dedupe_modules
+    text, dropped = dedupe_modules("module m(input a);\nendmodule\nmodule top(input a);\n  m u(.a(a));\nendmodule\nmodule m (input a);\n  wire x;\nendmodule\n")
+    assert dropped == ["m"] and text.count("module m") == 1 and "module top" in text

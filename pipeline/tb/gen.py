@@ -18,6 +18,7 @@ import pprint
 import sys
 from pathlib import Path
 
+from pipeline.emitter.sv import param_default
 from pipeline.ir.model import Module, load
 
 DEFAULT_PERIOD_NS = 10.0
@@ -174,7 +175,7 @@ def _param_header(raw: dict) -> str:
     ps = raw.get("params", [])
     if not ps:
         return ""
-    return "#(" + ", ".join(f'parameter {p["type"]} {_esc(p["name"])} = {p["default"]}' for p in ps) + ") "
+    return "#(" + ", ".join(f'parameter {p["type"]} {_esc(p["name"])} = {param_default(p)}' for p in ps) + ") "
 
 
 def _esc(name: str) -> str:

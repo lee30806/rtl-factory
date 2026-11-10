@@ -58,6 +58,9 @@ elif mode == "task_tools":
 elif mode == "quota_cc":   # Claude Code CLI: 종료 코드 1, 표준 출력에 안내
     print("You've hit your session limit · resets 1:20am (Asia/Seoul)")
     sys.exit(1)
+elif mode == "quota_cc_hours":
+    print("You've hit your 5-hour limit · resets 6pm (Asia/Seoul)")
+    sys.exit(1)
 elif mode == "quota":
     print("error: Individual quota reached. RESOURCE_EXHAUSTED (code 429)", file=sys.stderr)
     sys.exit(3)

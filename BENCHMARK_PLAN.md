@@ -111,7 +111,7 @@ rtl-factory/
   "incdirs": [],
   "defines": {},
   "cells": ["재사용할 하위 모듈 .v/.sv 경로 목록"],
-  "reference_rtl": ["정답 RTL 경로 (RTL-BenchLS 또는 R2 클럭/리셋 힌트용, 생성 에이전트에는 격리)"],
+  "reference_rtl": ["정답 RTL 경로 (RTL-BenchLS 왕복 입력과 채점용. 헤더 추출 힌트로도 쓰지 않음, 생성 에이전트에는 격리)"],
   "eval": {
     "kind": "iverilog | verilator | cvdp_docker | yosys_lec",
     "tb_files": ["testbench.v"],

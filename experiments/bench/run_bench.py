@@ -1,6 +1,7 @@
 """벤치마크 통합 실행 CLI 진입점 (BENCHMARK_PLAN 3절, B0, B1).
 
     python3 -m experiments.bench.run_bench --bench rtllm [--dataset <dir>] [--mode harness|standalone|both] [--workers 4] [--resume]
+    python3 -m experiments.bench.run_bench --bench rtl_benchls --dataset <slice_XX.jsonl> [--filter ...] [--limit N]
 """
 from __future__ import annotations
 
@@ -16,8 +17,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiments.bench.adapters.chipverilog import load_chipverilog  # noqa: E402
+from experiments.bench.adapters.rtl_benchls import load_benchls  # noqa: E402
 from experiments.bench.adapters.rtllm import load_rtllm_dir, materialize_builtin_pilot  # noqa: E402
 from experiments.bench.common.metrics import write_summary  # noqa: E402
+from experiments.bench.common.roundtrip import rescore_item, run_roundtrip_item, run_roundtrip_standalone  # noqa: E402
 from experiments.bench.common.runner import run_bench_item, run_spec_item, run_standalone_item  # noqa: E402
 from experiments.bench.common.schema import BenchItem, BenchResult  # noqa: E402
 from pipeline.agents import roles as roles_mod  # noqa: E402
@@ -35,6 +39,7 @@ def _run_suite(
     max_auto_approves: int = 3,
     spec_dir: Path | None = None,
     ext_fix_rounds: int = 1,
+    skip_verifier: bool = False,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_by_id: dict[str, BenchResult] = {}
@@ -51,7 +56,12 @@ def _run_suite(
     def _job(it: BenchItem) -> BenchResult | None:
         if quota_event.is_set():
             return None
-        if mode == "standalone":
+        if it.benchmark == "rtl_benchls" and mode == "standalone":
+            res = run_roundtrip_standalone(it, out_dir / it.id, roles, isolate=isolate, resume=resume)
+        elif it.benchmark == "rtl_benchls":
+            res = run_roundtrip_item(it, out_dir / it.id, roles, isolate=isolate, resume=resume,
+                                     max_auto_approves=max_auto_approves, skip_verifier=skip_verifier)
+        elif mode == "standalone":
             res = run_standalone_item(it, out_dir / it.id, roles, isolate=isolate, resume=resume)
         elif mode == "spec":
             res = run_spec_item(it, out_dir / it.id, roles, isolate=isolate, resume=resume)
@@ -66,6 +76,7 @@ def _run_suite(
                 resume=resume,
                 spec_dir=spec_dir,
                 ext_fix_rounds=ext_fix_rounds,
+                skip_verifier=skip_verifier,
             )
         if res.pipeline_status == "paused_quota":
             quota_event.set()
@@ -116,8 +127,8 @@ def _run_suite(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="외부 RTL 벤치마크 실행기")
-    ap.add_argument("--bench", choices=["rtllm"], default="rtllm", help="대상 벤치마크")
-    ap.add_argument("--dataset", type=Path, help="벤치마크 데이터셋 디렉터리 (생략 시 내장 파일럿 예제 사용)")
+    ap.add_argument("--bench", choices=["rtllm", "rtl_benchls", "chipverilog"], default="rtllm", help="대상 벤치마크")
+    ap.add_argument("--dataset", type=Path, help="벤치마크 데이터셋 디렉터리, rtl_benchls는 slice_XX.jsonl (rtllm은 생략 시 내장 파일럿 예제 사용)")
     ap.add_argument("--subset", choices=["sequential", "combinational", "all"], default="sequential")
     ap.add_argument("--mode", choices=["harness", "standalone", "both", "spec"], default="harness", help="실행 모드")
     ap.add_argument("--spec-dir", type=Path, help="미리 작성된 SPEC 디렉터리 (지정 시 <spec-dir>/<id>/spec을 복사해 재사용)")
@@ -132,14 +143,29 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-auto-approves", type=int, default=3, help="문제당 기댓값 수정 무인 승인 상한")
     ap.add_argument("--ext-fix-rounds", type=int, default=1,
                     help="외부 TB를 통과해 선택된 후보가 없을 때 외부 TB 결과로 SPEC을 고쳐 다시 돌리는 최대 횟수 (0이면 하지 않음)")
+    ap.add_argument("--skip-verifier", action="store_true",
+                    help="외부 TB가 있는 경우 내부 Verifier 에이전트를 생략하고 E2 검증에서 외부 TB를 직접 실행")
     ap.add_argument("--no-isolate", action="store_true", help="테스트용 샌드박스 격리 해제")
+    ap.add_argument("--rescore", action="store_true", help="rtl_benchls: 저장된 후보 RTL을 지금의 등가 채점으로 다시 채점 (에이전트 호출 없음)")
     args = ap.parse_args(argv)
 
     roles = roles_mod.load(args.roles)
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.dataset and args.dataset.exists():
+    if args.bench == "rtl_benchls":
+        if args.mode not in ("harness", "standalone"):
+            ap.error("rtl_benchls는 --mode harness(P11 왕복) 또는 standalone(같은 모델로 RTL → 자연어 → RTL)만 지원")
+        items = load_benchls(args.dataset, out_dir / "_gold")
+        if args.rescore:
+            items = [it for it in items if args.filter in it.id or re.fullmatch(args.filter or ".*", it.id)][: args.limit or None]
+            res = [r for it in items if (r := rescore_item(it, out_dir / it.id))]
+            write_summary(res, out_dir)
+            print(f"다시 채점 {len(res)}개: {out_dir / 'summary.md'}")
+            return 0
+    elif args.bench == "chipverilog":
+        items = load_chipverilog(args.dataset or ROOT / "build" / "cvdp_datasets" / "cvdp_chipverilog.jsonl", out_dir / "_src")
+    elif args.dataset and args.dataset.exists():
         items = load_rtllm_dir(args.dataset, subset=args.subset)
     else:
         items = [materialize_builtin_pilot(out_dir / "_pilot_src")]
@@ -174,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
             max_auto_approves=args.max_auto_approves,
             spec_dir=args.spec_dir,
             ext_fix_rounds=args.ext_fix_rounds,
+            skip_verifier=args.skip_verifier,
         )
         return 0 if (s_sum["total"] > 0 or h_sum["total"] > 0) else 1
 
@@ -189,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         max_auto_approves=args.max_auto_approves,
         spec_dir=args.spec_dir,
         ext_fix_rounds=args.ext_fix_rounds,
+        skip_verifier=args.skip_verifier,
     )
     if args.mode == "spec":
         return 0 if summary["total"] > 0 and summary["counts"]["spec_gate_pass"] > 0 else 1

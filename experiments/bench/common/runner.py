@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from experiments.bench.common import ext_fix
+from experiments.bench.common.lec import yosys_lec
 from experiments.bench.common.schema import BenchItem, BenchResult
+from pipeline.importer.sources import SourceError
 from experiments.bench.common.to_spec import _read_header_text, extract_header_l1, generate_spec, strip_to_header
 from pipeline.agents import roles as roles_mod, spec_writer
 from pipeline.agents.task import RUNS, QuotaExceeded, Task, run_task
@@ -33,6 +35,9 @@ You are a professional RTL hardware designer. Read the design specification in `
 ## Requirements
 - Write the complete Verilog/SystemVerilog code to `out/{top}.sv` (if the design requires helper submodules such as `dual_port_RAM`, include them in `out/{top}.sv` as well).
 - Keep the exact top module name `{top}`, parameter names/defaults, and port names/widths/directions from `header.sv`.
+- Preserve all compiler directives (`define, `include, `ifdef) specified in `header.sv` or `prompt.txt` at the very top of `out/{top}.sv`.
+- For register read multiplexers, address decoders, or case branches, strictly follow the unmapped address/default policy in `prompt.txt`: if the design specifies holding previous values on unmapped or idle cycles, do NOT insert an unnecessary default branch clearing the output to 0.
+- For asynchronous FIFOs (`asyn_fifo`) or multi-clock domain crossing (CDC) modules: follow the standard Clifford Cummings architecture and the exact register stages specified in `prompt.txt`. Do NOT insert extra output registering flip-flops (`wfull_reg`, `rempty_reg`) for full/empty flags unless explicitly declared as register ports in `header.sv`; full/empty flags are typically combinational comparisons (`assign wfull = ...; assign rempty = ...;`) comparing the local Gray pointer with the 2-stage synchronized Gray pointer. Do NOT shorten Gray pointer pipeline stages using lookahead next-state calculations if the prompt specifies sequential register update (binary counter register -> Gray conversion -> Gray pointer register), as standard benchmark testbenches verify cycle-accurate timing at every clock edge.
 - Do NOT write testbenches or markdown fences inside `out/{top}.sv`; `out/{top}.sv` must be valid, directly compilable Verilog/SystemVerilog source code.
 - Only create or modify files under `out/`.
 """
@@ -135,6 +140,8 @@ def run_pipeline_unattended(
     auto_approve: bool = True,
     max_auto_approves: int = 3,
     max_arch_revisions: int = 1,
+    max_modules: int | None = None,
+    external_tb: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Run.execute()를 실행하고 waiting_approval 발생 시 auto_decide로 자동 결정하며 수렴할 때까지 반복한다."""
     run_dir = Path(run_dir).resolve()
@@ -142,7 +149,7 @@ def run_pipeline_unattended(
     auto_history: list[dict[str, Any]] = []
 
     while True:
-        runner = Run(run_dir, spec_path, roles, cells=cells, isolate=isolate)
+        runner = Run(run_dir, spec_path, roles, cells=cells, isolate=isolate, max_modules=max_modules, external_tb=external_tb)
         rep = runner.execute()
         if rep["status"] != "waiting_approval" or not auto_approve:
             return rep, auto_history
@@ -282,37 +289,13 @@ def evaluate_rtl(item: BenchItem, sv_files: list[Path], eval_dir: Path) -> dict[
             "log_tail": out_text[-1000:],
         }
 
+    if kind == "chipverilog":
+        from experiments.bench.adapters.chipverilog import evaluate as chipverilog_evaluate
+        return chipverilog_evaluate(item, sv_files, eval_dir)
+
     if kind == "yosys_lec":
-        if not shutil.which("yosys"):
-            return {"ok": False, "kind": kind, "error": "yosys가 설치되어 있지 않음"}
-        gold_files = " ".join(str(Path(p).resolve()) for p in item.reference_rtl)
-        gate_files = " ".join(str(Path(p).resolve()) for p in sv_files)
-        top = item.top
-        script = (
-            f"read_verilog -sv {gold_files}; prep -flatten -top {top}; memory_map; opt_clean; rename {top} gold; design -stash gold; "
-            f"read_verilog -sv {gate_files}; prep -flatten -top {top}; memory_map; opt_clean; rename {top} gate; design -stash gate; "
-            "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
-            "equiv_make gold gate equiv; hierarchy -top equiv; async2sync; equiv_simple -seq 5; equiv_induct -seq 5; equiv_status"
-        )
-        log_path = eval_dir / "lec.log"
-        p = subprocess.run(["yosys", "-q", "-l", str(log_path), "-p", script], capture_output=True, text=True, timeout=120)
-        log = log_path.read_text(errors="replace") if log_path.exists() else p.stdout + p.stderr
-        m = re.search(r"Of those cells (\d+) are proven and (\d+) are unproven", log)
-        if m and int(m.group(2)) == 0:
-            return {"ok": True, "kind": kind, "method": "equiv", "proven_cells": int(m.group(1))}
-        # 유한 깊이 BMC 보완
-        bmc_script = (
-            f"read_verilog -sv {gold_files}; prep -flatten -top {top}; memory_map; opt_clean; rename {top} gold; design -stash gold; "
-            f"read_verilog -sv {gate_files}; prep -flatten -top {top}; memory_map; opt_clean; rename {top} gate; design -stash gate; "
-            "design -copy-from gold -as gold gold; design -copy-from gate -as gate gate; "
-            "miter -equiv -flatten -make_outputs gold gate miter; hierarchy -top miter; async2sync; dffunmap; "
-            "sat -verify -seq 12 -set-init-undef -set-def-inputs -prove trigger 0 miter"
-        )
-        bmc_log_path = eval_dir / "lec_bmc.log"
-        subprocess.run(["yosys", "-q", "-l", str(bmc_log_path), "-p", bmc_script], capture_output=True, text=True, timeout=120)
-        blog = bmc_log_path.read_text(errors="replace") if bmc_log_path.exists() else ""
-        ok = "SAT proof finished - no model found: SUCCESS" in blog
-        return {"ok": ok, "kind": kind, "method": "bmc", "log_tail": blog[-1000:]}
+        return yosys_lec([Path(p) for p in item.reference_rtl], sv_files, item.top, eval_dir,
+                         resets=item.eval.lec_resets, depth=item.eval.lec_depth)
 
     return {"ok": False, "kind": kind, "error": f"지원하지 않는 채점 방식: {kind}"}
 
@@ -461,6 +444,7 @@ def run_bench_item(
     resume: bool = False,
     spec_dir: Path | None = None,
     ext_fix_rounds: int = 1,
+    skip_verifier: bool = False,
 ) -> BenchResult:
     """단일 벤치마크 문제를 입력 변환(to_spec) → 무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정까지 수행한다.
     외부 TB를 통과해 선택된 후보가 없으면 외부 TB 결과로 SPEC을 고쳐 ext_fix_rounds번까지 다시 돌린다 (ext_fix.py)."""
@@ -503,6 +487,9 @@ def run_bench_item(
             )
             res_file.write_text(json.dumps(res.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
             return res
+        except (RuntimeError, SourceError) as exc:
+            # 헤더 추출(R1/R2) 실패: 이 문제만 SPEC 실패로 남긴다. 올리면 병렬 실행의 결과 집계가 멈춘다
+            spec_out, spec_errs, spec_agent_runs = None, [f"헤더 추출 실패: {exc}"[:1000]], 0
         if spec_out is None or spec_errs:
             res = BenchResult(
                 benchmark=item.benchmark,
@@ -513,6 +500,7 @@ def run_bench_item(
                 spec_errors=spec_errs,
                 pipeline_status="spec_failed",
                 agent_runs=spec_agent_runs,
+                lessons=_lessons(out_dir),
                 minutes=round((time.monotonic() - t0) / 60, 2),
             )
             res_file.write_text(json.dumps(res.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -520,7 +508,8 @@ def run_bench_item(
 
     extra_cells = [Path(c).resolve() for c in item.cells if Path(c).exists()]
     cells = [*STUB_CELLS, *extra_cells]
-    opts = dict(isolate=isolate, auto_approve=auto_approve, max_auto_approves=max_auto_approves, max_arch_revisions=max_arch_revisions)
+    opts = dict(isolate=isolate, auto_approve=auto_approve, max_auto_approves=max_auto_approves,
+                max_arch_revisions=max_arch_revisions, skip_verifier=skip_verifier)
     first = run_and_score(item, out_dir / "run", out_dir / "eval", spec_path, roles, cells, **opts)
     agent_runs = spec_agent_runs + int(first["rep"].get("agent_runs", 0))
 
@@ -578,15 +567,23 @@ def run_bench_item(
         bench_pass_chosen_final=last["bench_pass_chosen"],
         bench_pass_any_final=first["bench_pass_any"] or any(r.get("bench_pass_any") for r in rounds),
         sim_model=bool(rep.get("sim_model")),
+        lessons=_lessons(out_dir),
     )
     res_file.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
 
+def _lessons(out_dir: Path) -> list[str]:
+    """헤더 추출(extract_header_l1)이 notes.json에 남긴 LESSON."""
+    f = Path(out_dir) / "spec" / "l1_extract" / "notes.json"
+    return json.loads(f.read_text(encoding="utf-8")).get("lessons", []) if f.exists() else []
+
+
 def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Path, roles: roles_mod.Roles,
                   cells: list[Path], isolate: bool = True, auto_approve: bool = True, max_auto_approves: int = 3,
-                  max_arch_revisions: int = 1) -> dict[str, Any]:
+                  max_arch_revisions: int = 1, max_modules: int | None = None, skip_verifier: bool = False) -> dict[str, Any]:
     """무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정."""
+    ext_tb_fn = (lambda sv_files, _top, eval_dir: evaluate_rtl(item, sv_files, eval_dir)) if skip_verifier else None
     rep, auto_decs = run_pipeline_unattended(
         run_dir,
         spec_path,
@@ -596,6 +593,8 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
         auto_approve=auto_approve,
         max_auto_approves=max_auto_approves,
         max_arch_revisions=max_arch_revisions,
+        max_modules=max_modules,
+        external_tb=ext_tb_fn,
     )
 
     langs = list(roles.author_langs) if getattr(roles, "author_langs", None) else ["sv"]

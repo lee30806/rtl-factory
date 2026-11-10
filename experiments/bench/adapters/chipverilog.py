@@ -1,0 +1,145 @@
+"""B2: ChipVerilog 로더와 채점 (BENCHMARK_PLAN B2).
+
+입력은 pymtl에서 엔진 간 공정 비교용으로 미리 만든 CVDP 형식 JSONL(`build/cvdp_datasets/cvdp_chipverilog.jsonl`)이다.
+레코드의 `input`(원문 프롬프트 + 추가 프롬프트)을 SPEC 작성 입력으로 쓰고, `harness.files`에서 헤더 include와 재사용 셀을 꺼낸다.
+
+채점은 ChipVerilog 공식 도구(`build/datasets/ChipVerilog/tools/formal_equivalence.py verify`)로 한다: iverilog 컴파일 게이트,
+자체 검사 TB가 있으면 시뮬레이션, 없으면 Yosys 등가(유도/유한 깊이). 공식 판정 `status == "pass"`만 통과다.
+정답 RTL(`Des/`)은 채점에만 쓰고 에이전트에게 주지 않는다.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+from experiments.bench.common.schema import BenchItem, EvalSpec
+
+# 이 저장소(experiments/bench/adapters)와 pymtl(src/rtl_factory/bench/adapters) 어디에 있든 위로 올라가며 데이터를 찾는다
+CV_ROOT = next((d / "build" / "datasets" / "ChipVerilog" for d in Path(__file__).resolve().parents
+                if (d / "build" / "datasets" / "ChipVerilog" / "tools").exists()), Path("build/datasets/ChipVerilog"))
+TOOL = CV_ROOT / "tools" / "formal_equivalence.py"
+
+
+def load_records(path: Path) -> list[dict]:
+    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def des_dir(original_id: str) -> Path:
+    hits = [p for p in CV_ROOT.glob(f"Des/*/{original_id}") if p.is_dir()]
+    if len(hits) != 1:
+        raise FileNotFoundError(f"ChipVerilog Des 디렉터리를 찾지 못함: {original_id} ({hits})")
+    return hits[0]
+
+
+def reference_file(d: Path) -> Path:
+    """공식 도구(discover_reference_file)와 같은 규칙: `<모듈>.v`, 없으면 디렉터리의 유일한 .v."""
+    if (f := d / f"{d.name}.v").exists():
+        return f
+    vs = sorted(d.glob("*.v"))
+    if len(vs) != 1:
+        raise FileNotFoundError(f"정답 파일을 정하지 못함: {d}")
+    return vs[0]
+
+
+def to_item(rec: dict, src_root: Path) -> BenchItem:
+    h, meta = rec["harness"], rec["metadata"]
+    d = Path(src_root).resolve() / rec["id"]
+    for rel, text in h["files"].items():
+        if rel.startswith(("rtl/", "src/")):   # 정답(ref/)과 TB(tb/)는 꺼내지 않는다
+            p = d / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+    top = meta["top_module"]
+    return BenchItem(
+        benchmark="chipverilog",
+        id=rec["id"],
+        category=meta.get("tier", "standalone"),
+        top=top,
+        prompt_text=rec["input"],
+        header_sv=meta.get("header_sv") or rec["context"].get(f"rtl/{top}.sv", ""),
+        incdirs=[str(d / x) for x in h.get("include_dirs", [])],
+        cells=[str(d / c) for c in h.get("cell_files", [])],
+        reference_rtl=[str(reference_file(des_dir(meta["original_id"])))],
+        eval=EvalSpec(kind="chipverilog"),
+    )
+
+
+def load_chipverilog(path: Path, src_root: Path) -> list[BenchItem]:
+    return [to_item(r, src_root) for r in load_records(path)]
+
+
+MODULE_BLOCK_RE = re.compile(r"^\s*module\s+([A-Za-z_]\w*)\b.*?^\s*endmodule\b", re.M | re.S)
+
+
+def dedupe_modules(text: str) -> tuple[str, list[str]]:
+    """같은 이름의 module 정의가 둘 이상이면 처음 것만 남긴다 (파일 목록은 제공 셀이 먼저 온다)."""
+    seen: set[str] = set()
+    dropped: list[str] = []
+
+    def keep(m: re.Match) -> str:
+        if m.group(1) in seen:
+            dropped.append(m.group(1))
+            return f"// [rtlf] 중복 정의 제거: {m.group(1)} (제공 셀을 씀)"
+        seen.add(m.group(1))
+        return m.group(0)
+
+    return MODULE_BLOCK_RE.sub(keep, text), dropped
+
+
+def _verify(text: str, name: str, root: Path, timeout: int) -> tuple[dict | None, Path, str]:
+    cdir = root / "result_root" / "rtlf" / name
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / f"{name}_t1.v").write_text(text, encoding="utf-8")
+    p = subprocess.run([sys.executable, str(TOOL), "verify", str(cdir), "--result-root", str(root / "result_root"),
+                        "--report-dir", str(root / "reports")], cwd=CV_ROOT, capture_output=True, text=True, timeout=timeout)
+    (root / "verify.log").write_text(p.stdout + p.stderr, encoding="utf-8")
+    rf = cdir / f"{name}_t1" / "result.json"
+    return (json.loads(rf.read_text(encoding="utf-8")) if rf.exists() else None), cdir / f"{name}_t1", p.stdout + p.stderr
+
+
+def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int = 1800) -> dict[str, Any]:
+    """후보 SV 파일들을 한 파일로 합쳐 공식 결과 트리(`<root>/rtlf/<모듈>/<모듈>_t1.v`)에 두고 공식 verify를 돌린다.
+    같은 이름 module이 둘이면 처음 것(제공 셀)만 남긴다."""
+    eval_dir = Path(eval_dir).resolve()
+    des = Path(item.reference_rtl[0]).parent
+    name = ("mips_" if des.parent.name == "mips_16" else "") + des.name
+    # 방출 RTL의 SVA는 `ifndef SYNTHESIS 안에 있다. iverilog는 동시 assertion을 읽지 못하므로 RTLLM 채점(-DSYNTHESIS)처럼 끈다
+    body, dropped = dedupe_modules("\n\n".join(Path(p).read_text(encoding="utf-8") for p in sv_files))
+    text = "`define SYNTHESIS\n" + body
+    r, adir, log = _verify(text, name, eval_dir, timeout)
+    if not r:
+        return {"ok": False, "kind": "chipverilog", "stage": "tool_error", "log_tail": log[-1000:]}
+    ok = r.get("status") == "pass"
+    # 등가 실패면 증명되지 않은 출력 이름을 남긴다 (Repair가 볼 단서. 공식 반례 요약은 배너뿐인 때가 많다)
+    unproven = []
+    if (eq := adir / "equivalence.log").exists():
+        for m in re.finditer(r"Unproven \$equiv \S+: \\(\S+?)_gold(?: \[(\d+)\])?", eq.read_text(errors="replace")):
+            if m.group(1) not in unproven:
+                unproven.append(m.group(1))
+    stage = {"compile_fail": "compile"}.get(r.get("status"), "sim")
+    return {"ok": ok, "kind": "chipverilog", "status": r.get("status"), "flow": r.get("flow"), "proof_type": r.get("proof_type"),
+            "stage": stage, "unproven_outputs": unproven, "deduped_modules": dropped,
+            "log_tail": "" if ok else (f'{r.get("status")}: ' + (f"정답과 등가가 증명되지 않은 출력 {unproven[:20]} (사이클 단위 비교). " if unproven else "")
+                                       + f'{r.get("reason", "")} {r.get("counterexample_summary", "")}')[:1500]}
+
+
+def official_verdict(rec: dict, rtl_code: str, work_dir: Path) -> dict[str, Any]:
+    """CVDP 레코드 하나와 아무 엔진의 생성 RTL 문자열을 공식 도구로 채점한다 (엔진 간 비교에서 모든 엔진에 같은 판정).
+    CVDP 변환본이 덧붙인 `include 파일(예: defines.vh)은 공식 도구에 없으므로 레코드의 같은 이름 파일 내용으로 펼친다."""
+    work_dir = Path(work_dir).resolve()
+    files = {**rec.get("context", {}), **rec["harness"]["files"]}   # include 대상은 harness, 없으면 context에서 찾는다
+
+    def inline(m: re.Match) -> str:
+        name = m.group(1)
+        return next((v for k, v in files.items() if k == name or k.endswith("/" + name)), m.group(0))
+
+    if not rtl_code.strip():
+        return {"ok": False, "kind": "chipverilog", "status": "no_rtl", "log_tail": "생성 RTL 없음"}
+    work_dir.mkdir(parents=True, exist_ok=True)
+    cand = work_dir / "cand.v"
+    cand.write_text(re.sub(r'`include\s+"([^"]+)"', inline, rtl_code), encoding="utf-8")
+    return evaluate(to_item(rec, work_dir / "src"), [cand], work_dir / "eval")

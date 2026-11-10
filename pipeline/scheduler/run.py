@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import sys
 import threading
@@ -64,12 +65,15 @@ class BudgetExceeded(RuntimeError):
 
 class Run:
     def __init__(self, run_dir: Path, spec: Path, roles: roles_mod.Roles, cells: list[Path] | None = None,
-                 isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None, max_modules: int | None = None):
+                 isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None,
+                 max_modules: int | None = None, external_tb=None):
         """seed: 이전 실행에서 이어 가는 재실행(환류). {"parent": 실행 디렉터리, "kind": "external_repair" | "spec_change",
         "failures": {모듈: 분류된 외부 리포트 항목}, "old_spec": 이전 SPEC, "spec_diff": spec_diff.diff 결과}.
-        max_modules: Architect의 하위 모듈 수 상한 (P11 R6 재생성). 상태에 남아 이어 가기에서도 같다."""
+        max_modules: Architect의 하위 모듈 수 상한 (P11 R6 재생성). 상태에 남아 이어 가기에서도 같다.
+        external_tb: 외부 테스트벤치 실행 콜백 `(sv_files, top, eval_dir) -> {"ok": bool, "stage": str, "log_tail": str}`. 지정 시 Verifier 에이전트를 생략한다."""
         self.dir, self.spec_path, self.roles = Path(run_dir).resolve(), Path(spec).resolve(), roles
         self.cells, self.isolate, self.seeds = cells if cells is not None else STUB_CELLS, isolate, seeds or [1]
+        self.external_tb = external_tb
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "modules").mkdir(exist_ok=True)
         (self.dir / "tasks").mkdir(exist_ok=True)
@@ -367,6 +371,7 @@ class Run:
                                                    f"{res.errors[:3]}", str(res.workdir), "architect")
             return None
         top_ir, children, assumptions = architect.read_tree(Path(res.workdir), top_l1["module"])
+        self.reuse_cells(children)
         for a in assumptions:
             if architect.needs_review(a):
                 self.review("ASSUMPTION", f"[재구성 {rev}] {_assumption(a)}", "architect", "architect")
@@ -407,6 +412,15 @@ class Run:
         seed = self.state.get("seed")
         return json.loads((Path(seed["parent"]) / "state.json").read_text(encoding="utf-8")) if seed else None
 
+    def reuse_cells(self, children: dict[str, dict]) -> None:
+        """제공 셀과 같은 이름의 하위 모듈은 셀을 그대로 쓰는 external로 바꾼다. 새로 만들면 셀과 방출 RTL에 같은 모듈이
+        둘 생긴다 (ChipVerilog cross_module 중복 정의). L1(포트)은 Architect가 정한 그대로 둔다."""
+        for n, path in cell_modules(self.cells).items():
+            if n in children and not (children[n].get("role") == "external" and children[n].get("rtl_files")):
+                children[n] = {**{k: v for k, v in children[n].items() if k in ("module", "params", "domains", "ports")},
+                               "role": "external", "rtl_files": [str(path)]}
+                self.event("architect", f"{n}: 제공 셀({path.name})과 이름이 같아 셀을 쓰는 external로 바꿈")
+
     def step_architect(self) -> dict | None:
         if (s := self.done("architect")) is not None:
             return s
@@ -425,6 +439,7 @@ class Run:
             self.finish_step("architect", None)
             return None
         top_ir, children, assumptions = architect.read_tree(Path(res.workdir), top_l1["module"])
+        self.reuse_cells(children)
         for a in assumptions:   # 모듈 안의 배분만 정한 가정은 Architect 기록(tree)에만 남긴다
             if architect.needs_review(a):
                 self.review("ASSUMPTION", _assumption(a), "architect", "architect")
@@ -443,6 +458,12 @@ class Run:
         """Verifier 후보들의 테스트 파일. Block Top의 L1만 준다 (L2, L3, RTL은 없음)."""
         if (s := self.done("verifiers")) is not None:
             return s
+        if self.external_tb is not None:
+            if (ps := self.parent_state()) is not None:
+                self.seed_modules(ps)
+            self.event("verifiers", "외부 테스트벤치(external_tb) 사용으로 Verifier 에이전트 생략")
+            self.finish_step("verifiers", ["external_tb"])
+            return ["external_tb"]
         l1 = {k: top_ir[k] for k in ("module", "role", "params", "domains", "ports") if k in top_ir}
         if (ps := self.parent_state()) is not None:
             tbs = list(ps["steps"]["verifiers"])
@@ -553,6 +574,9 @@ class Run:
         mods = {n: Module(r) for n, r in lib.items()}
         files, maps = list(self.cells), {}
         for n, m in mods.items():
+            if m.role == "external":
+                files += [f for f in external_files(m) if f not in files]
+                continue
             e = emit(m, mods)
             (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
             files.append(rtl / f"{n}.sv")
@@ -574,12 +598,26 @@ class Run:
         (tdir / f"{top}_trace.json").write_text(json.dumps(trace_names(top_m, mods)), encoding="utf-8")
         e2 = []
         pads, sim_top = pad_top(top_m.raw, out / "pad")   # inout Block Top은 패드 래퍼를 top으로
-        for k, tb in enumerate([] if frag_lint else tbs):
-            r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
-                    trace=tdir / f"{top}_trace.json")
-            res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
-            e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
-                                                               for f in r.findings], "out": str(res_dir)})
+        if self.external_tb is not None:
+            if not frag_lint:
+                ext_dir = out / "sim_ext"
+                ext_dir.mkdir(parents=True, exist_ok=True)
+                ext_r = self.external_tb([*files, *pads], sim_top, ext_dir)
+                ext_ok = bool(ext_r.get("ok"))
+                findings = []
+                if not ext_ok:
+                    stage = ext_r.get("stage", "sim")
+                    rule = "SIM_TIMEOUT" if stage == "sim_timeout" else "AssertionError"
+                    msg = ext_r.get("log_tail") or ext_r.get("error") or "외부 테스트벤치 실패"
+                    findings = [{"test": "external_tb", "rule": rule, "message": str(msg)[:800]}]
+                e2.append({"verifier": "ext", "ok": ext_ok, "findings": findings, "out": str(ext_dir)})
+        else:
+            for k, tb in enumerate([] if frag_lint else tbs):
+                r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
+                        trace=tdir / f"{top}_trace.json")
+                res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
+                e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
+                                                                   for f in r.findings], "out": str(res_dir)})
         return {"e1": [{"type": c.type, "node": c.node, "module": c.module, "message": c.message[:200],
                         "severity": c.source.get("severity")} for c in e1c],
                 "e2": e2, "py_equiv": py_equiv,
@@ -826,7 +864,7 @@ class Run:
                 save_all(status="waiting_approval", pending=pid)
                 break
             skip = sts[mods[0]].get("skip_arbiter", [])   # 사람이 기댓값 수정을 거절한 Verifier: 테스트가 맞으므로 Repair로
-            single = bool(failed) and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip
+            single = self.external_tb is None and bool(failed) and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip
             if single:
                 # 한 Verifier에서만 실패: 그 Verifier의 오류일 수 있으므로 Arbiter가 판정한다
                 verdict = self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, failed[0], f"r{total}")
@@ -838,7 +876,7 @@ class Run:
             n = first.get("fail_sig_n", 0) + 1 if failed and first.get("fail_sig") == sig else 1
             save_all(fail_sig=sig, fail_sig_n=n)
             after = self.roles.limits.get("arbiter_after_repeats", 2)
-            if failed and not single and n > after and sig not in first.get("repeat_arbitrated", []):
+            if self.external_tb is None and failed and not single and n > after and sig not in first.get("repeat_arbitrated", []):
                 save_all(repeat_arbitrated=first.get("repeat_arbitrated", []) + [sig])
                 repeated = {"repairs": n - 1, "modules": mods,
                             "note": f"Repair {n - 1}번 뒤에도 같은 테스트가 같은 이유로 실패함"}
@@ -895,12 +933,13 @@ class Run:
                 patches = json.loads(Path(rres.outputs[repair.OUT]).read_text())
                 if (reason := repair.interface_change(patches)) is not None:
                     # L1 변경 요청은 테스트 기댓값 탓일 수 있다: 실패한 Verifier마다 Arbiter가 먼저 판정한다 (P8 회고 1)
-                    claim = {"module": mod, "reason": reason}
-                    verdicts = [self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, v, f"r{total}/ic", claim)
-                                for v in failed if v["verifier"] not in skip]
-                    if any(x in ("test_wrong", "spec_ambiguous") for x in verdicts):
-                        stop = {}   # arbitrate가 승인 대기로 바꿔 둠
-                        break
+                    if self.external_tb is None:
+                        claim = {"module": mod, "reason": reason}
+                        verdicts = [self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, v, f"r{total}/ic", claim)
+                                    for v in failed if v["verifier"] not in skip]
+                        if any(x in ("test_wrong", "spec_ambiguous") for x in verdicts):
+                            stop = {}   # arbitrate가 승인 대기로 바꿔 둠
+                            break
                     self.review("INTERFACE_CHANGE", f"{mod} 후보 {c}: Repair가 L1 변경을 요청함: {reason}", rres.workdir, "repair")
                     stop = dict(status="interface_change")
                     break
@@ -911,7 +950,7 @@ class Run:
                     if sus[0] in tried:
                         # 형제 Repair들이 서로 넘김: 모듈 쪽이 아니라 테스트 쪽 문제일 수 있으므로 lead에게 올리기 전에 Arbiter가 한 번 판정
                         # (P8a async_fifo: Verifier의 set_ready 오해로 생긴 실패가 Repair 충돌로 올라가 lead가 테스트를 고를 수 없었음)
-                        if failed and sig not in sts[mods[0]].get("repeat_arbitrated", []):
+                        if self.external_tb is None and failed and sig not in sts[mods[0]].get("repeat_arbitrated", []):
                             save_all(repeat_arbitrated=sts[mods[0]].get("repeat_arbitrated", []) + [sig])
                             conflict = {"repairs": total, "modules": tried + [sus[0]],
                                         "note": f"형제 모듈의 Repair들이 서로 원인을 넘김 ({' → '.join(tried + [sus[0]])}). 각 모듈은 자기 쪽이 SPEC대로라고 함"}
@@ -936,7 +975,7 @@ class Run:
                 new = apply(st["ir"], patches)
                 h = ir_hash(new.ir)
                 if h in st["hashes"]:
-                    if failed and not single and sig not in sts[mods[0]].get("repeat_arbitrated", []):
+                    if self.external_tb is None and failed and not single and sig not in sts[mods[0]].get("repeat_arbitrated", []):
                         save_all(repeat_arbitrated=sts[mods[0]].get("repeat_arbitrated", []) + [sig])
                         repeated = {"repairs": st["repairs"], "modules": mods,
                                     "note": f"Repair가 같은 IR로 되돌아와(진동) 중단하기 전에 Arbiter가 테스트/SPEC을 판정함"}
@@ -989,7 +1028,7 @@ class Run:
         else:
             chosen = {m: ok[0][2] for m in mods}
             passed = [c for _, _, c in ok]
-            if len(passed) >= 2:
+            if len(passed) >= 2 and self.external_tb is None:
                 diff = candidate_diff([allst[f"{mods[0]}/c{c}"]["outputs"] for c in passed])
                 if diff:
                     self.review("CANDIDATE_DIFF", f"{', '.join(mods)}: 통과한 후보들이 같은 테스트에서 다른 출력을 냄 ({diff}). "
@@ -1123,6 +1162,12 @@ class Run:
         rtl.mkdir(exist_ok=True)
         mods = {n: Module(r) for n, r in lib.items()}
         for n, m in mods.items():
+            if m.role == "external":   # 등록 RTL을 결과에 함께 둔다
+                (self.dir / "ir" / f"{n}.ir.json").write_text(json.dumps(lib[n], ensure_ascii=False, indent=1), encoding="utf-8")
+                for f in external_files(m):
+                    if f.exists():
+                        shutil.copy(f, rtl / f.name)
+                continue
             e = emit(m, mods)
             (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
             # 외부 리포트를 IR 노드에 대응시킬 때 쓴다
@@ -1145,15 +1190,16 @@ class Run:
         top, l1_json = top_l1["module"], json.dumps(top_l1, ensure_ascii=False, indent=1)
         self.review("SIM_MODEL", f"{top}은 시뮬레이션 모델이라 합성과 PPA 대상이 아님 (합성 RTL로 쓸 수 없음)", "9. 구현 제약")
         tbs = []
-        for v in range(self.roles.counts.get("verifier", 1)):
-            name = f"sim_model/verifier/v{v}"
-            res = self.agent("verifier", sim_model.verifier_task(name, top, self.spec_path, l1_json), sim_model.check_tb(top_l1))
-            if res.ok:
-                tbs.append(Path(res.outputs[sim_model.tb_rel(top)]))
-        if not tbs:
-            self.state["status"] = "failed"
-            self.review("VERIFIER_FAILED", "쓸 수 있는 테스트벤치가 없음")
-            return
+        if self.external_tb is None:
+            for v in range(self.roles.counts.get("verifier", 1)):
+                name = f"sim_model/verifier/v{v}"
+                res = self.agent("verifier", sim_model.verifier_task(name, top, self.spec_path, l1_json), sim_model.check_tb(top_l1))
+                if res.ok:
+                    tbs.append(Path(res.outputs[sim_model.tb_rel(top)]))
+            if not tbs:
+                self.state["status"] = "failed"
+                self.review("VERIFIER_FAILED", "쓸 수 있는 테스트벤치가 없음")
+                return
         limit = self.roles.limits.get("repair_per_candidate", 3)
         for c in range(self.roles.counts.get("author", 1)):
             key, st = f"{top}/c{c}", self.mod_state(f"{top}/c{c}")
@@ -1167,7 +1213,11 @@ class Run:
                     st.update(status="author_failed", reason="; ".join(res.errors)[:500])
                     break
                 model = Path(res.outputs[sim_model.model_rel(top)])
-                out = {f"tb{i}": sim_model.run_tb(model, tb, top, self.dir / "verify" / f"c{c}_r{r}_tb{i}") for i, tb in enumerate(tbs)}
+                if self.external_tb is not None:
+                    ext_r = self.external_tb([model], top, self.dir / "verify" / f"c{c}_r{r}_ext")
+                    out = {"ext": {"ok": bool(ext_r.get("ok")), "log": ext_r.get("log_tail") or ext_r.get("error") or ""}}
+                else:
+                    out = {f"tb{i}": sim_model.run_tb(model, tb, top, self.dir / "verify" / f"c{c}_r{r}_tb{i}") for i, tb in enumerate(tbs)}
                 st.update(repairs=r)
                 if all(x["ok"] for x in out.values()):
                     dst = self.dir / "sim_model" / f"c{c}"
@@ -1204,7 +1254,8 @@ class Run:
                 return self.report()
             tbs = self.step_verifiers(tree["top"])
             if tbs:
-                tbs = self.apply_decisions(tree, tbs)
+                if self.external_tb is None:
+                    tbs = self.apply_decisions(tree, tbs)
                 tree = self.apply_lead_decisions(tree)
             if not tbs:
                 self.state["status"] = "failed"
@@ -1247,12 +1298,33 @@ INIT_RESET_CYCLES = 10
 DIFF_RUNS = [("steady", 1), ("steady", 2), ("reset", 3), ("reset", 4)]
 
 
+MODULE_DEF_RE = re.compile(r"^\s*module\s+([A-Za-z_]\w*)", re.M)
+
+
+def cell_modules(cells: list[Path]) -> dict[str, Path]:
+    """셀 파일들이 정의하는 모듈 이름 → 파일."""
+    out: dict[str, Path] = {}
+    for c in cells:
+        for n in MODULE_DEF_RE.findall(Path(c).read_text(encoding="utf-8", errors="replace")):
+            out.setdefault(n, Path(c).resolve())
+    return out
+
+
+def external_files(m: Module) -> list[Path]:
+    """external 모듈의 등록 RTL 파일 (절대 경로, 또는 IR 파일 기준 상대 경로)."""
+    base = m.path.parent if m.path else Path.cwd()
+    return [(Path(f) if Path(f).is_absolute() else base / f).resolve() for f in m.raw.get("rtl_files", [])]
+
+
 def emit_lib(lib: dict[str, dict], rtl: Path, cells: list[Path]) -> tuple[list[Path], dict]:
     """IR 묶음을 SV로 방출한다 → (파일 목록, 모듈별 소스맵)."""
     rtl.mkdir(parents=True, exist_ok=True)
     mods = {n: Module(r) for n, r in lib.items()}
     files, maps = list(cells), {}
     for n, m in mods.items():
+        if m.role == "external":
+            files += [f for f in external_files(m) if f not in files]
+            continue
         e = emit(m, mods)
         (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
         files.append(rtl / f"{n}.sv")

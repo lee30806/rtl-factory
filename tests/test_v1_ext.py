@@ -119,7 +119,7 @@ def test_function_fixture_passes_and_emits_functions_with_sourcemap():
     m = Module(_fn("fn_mod_py"))
     e = emit(m)
     assert "function automatic logic [7:0] mix(input logic [7:0] x, input logic [7:0] w);" in e.text
-    assert "task" not in e.text and "return mix(acc, 8'd1);" in e.text
+    assert "task" not in e.text and "rot = mix(acc, 8'd1);" in e.text and "return" not in e.text   # Yosys가 읽도록 마지막 return은 이름 대입
     nodes = {x["node"] for x in e.sourcemap if x.get("fragment")}
     assert {"functions/mix", "functions/mix/body", "assertions/p_z"} <= nodes
     assert any(x["node"] == "functions/rot/body" and "py_line" in x for x in e.sourcemap)   # Python 조각 줄 대응

@@ -85,6 +85,38 @@ class _Writer:
         return _Ctx()
 
 
+SIZED_RE = re.compile(r"^\s*(\d+)\s*'([sS]?)([bBoOdDhH])\s*([0-9a-fA-F_]+)\s*$")
+
+
+def param_default(p: dict) -> str:
+    """int형 파라미터의 크기 지정 리터럴(원본 헤더의 `8'd0` 등)은 같은 값의 10진수로 쓴다. 선언 기본값과 인스턴스 바인딩 모두.
+    그대로 쓰면 Verilator -Wall이 폭 경고(WIDTHEXPAND)를 내 E1과 번역기 검사가 실패한다 (RTL-BenchLS rtlpp_07499, RTLLM alu)."""
+    m = SIZED_RE.match(str(p["default"]))
+    if p["type"] not in ("int", "integer") or not m:
+        return p["default"]
+    width, signed, base, digits = int(m.group(1)), bool(m.group(2)), m.group(3).lower(), m.group(4).replace("_", "")
+    try:
+        v = int(digits, {"b": 2, "o": 8, "d": 10, "h": 16}[base]) & ((1 << width) - 1)
+    except ValueError:
+        return p["default"]
+    if signed and v >> (width - 1):
+        v -= 1 << width
+    return str(v) if -(1 << 31) <= v < (1 << 31) else p["default"]
+
+
+RETURN_RE = re.compile(r"^(.*?)(?<![\w$])return\s+([^;]+);\s*$")
+
+
+def _fn_body(f: dict) -> str:
+    """function 본문 마지막 문장 `return e;`를 `<이름> = e;`로 쓴다 (`... end return r;`처럼 줄 끝에 붙은 것도). Yosys(합성, 등가 채점)는 `return`을 읽지 못한다.
+    줄 수는 그대로라 조각 줄 대응이 바뀌지 않는다. 중간의 `return`은 그대로 둔다."""
+    lines = f["body"].split("\n")
+    last = max((i for i, ln in enumerate(lines) if ln.strip()), default=None)
+    if f["kind"] == "function" and last is not None and (m := RETURN_RE.match(lines[last])):
+        lines[last] = f'{m.group(1)}{f["name"]} = {m.group(2)};'
+    return "\n".join(lines)
+
+
 def _decl(type_: str, name: str) -> str:
     """`logic [7:0]` 같은 타입 문자열과 이름으로 선언문을 만든다."""
     return f"{type_} {name};"
@@ -268,7 +300,7 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
     if params:
         w.line(f"module {m.name} #(")
         for i, p in enumerate(params):
-            w.line(f'  parameter {p["type"]} {p["name"]} = {p["default"]}' + ("," if i < len(params) - 1 else ""),
+            w.line(f'  parameter {p["type"]} {p["name"]} = {param_default(p)}' + ("," if i < len(params) - 1 else ""),
                    frag=f'params/{p["name"]}')
         w.line(") (")
     else:
@@ -281,7 +313,7 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
 
     for p in m.params:
         if p.get("local"):
-            w.line(f'  localparam {p["type"]} {p["name"]} = {p["default"]};', frag=f'params/{p["name"]}')
+            w.line(f'  localparam {p["type"]} {p["name"]} = {param_default(p)};', frag=f'params/{p["name"]}')
     for t in m.types:
         with w.node(f'types/{t["name"]}'):
             if t["kind"] == "enum":
@@ -311,7 +343,7 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
             w.line(f"  {function_head(f)}", frag=node)
             for v in f.get("vars", []):
                 w.line(f'    {_decl(v["type"], v["name"])}', frag=node)
-            w.line(_indent(f["body"], 4), frag=f"{node}/body", py=m.py_lines.get(f"{node}/body"))
+            w.line(_indent(_fn_body(f), 4), frag=f"{node}/body", py=m.py_lines.get(f"{node}/body"))
             w.line(f"  {function_tail(f)}")
         w.line()
 
@@ -396,7 +428,8 @@ def emit(m: Module, library: dict[str, Module] | None = None) -> Emitted:
                 net, cid = nets.get((inst["name"], p.name), ("", None))
                 # 연결이 없는 핀은 연결을 추가해서 고친다.
                 conns.append((f'.{p.name}({net})', f"connections/{cid}" if cid else "connections"))
-        prm = ", ".join(f".{k}({v})" for k, v in inst.get("params", {}).items())
+        ctype = {cp["name"]: cp["type"] for cp in child.params}
+        prm = ", ".join(f".{k}({param_default({'type': ctype.get(k, ''), 'default': v})})" for k, v in inst.get("params", {}).items())
         with w.node(f'instances/{inst["name"]}'):
             head = f'  {child.name} #({prm}) {inst["name"]} (' if prm else f'  {child.name} {inst["name"]} ('
             w.line(head)

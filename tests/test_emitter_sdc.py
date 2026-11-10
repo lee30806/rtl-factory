@@ -112,3 +112,68 @@ def test_emitted_two_domain_design_lints_clean(tmp_path):
     r = subprocess.run(["verilator", "--lint-only", "-Wall", "-Wno-UNUSEDSIGNAL", "--top-module", "pkt_rx_top", "sync_2ff.sv",
                         "pkt_parser.sv", "pkt_rx_top.sv"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_sized_int_param_default_emitted_as_decimal(tmp_path):
+    """원본 헤더의 `parameter S = 8'd0`가 int로 옮겨져도 Verilator -Wall 폭 경고가 나지 않게 10진수로 쓴다."""
+    from pipeline.emitter.sv import param_default
+    from pipeline.tb.gen import _param_header
+
+    assert param_default({"type": "int", "default": "8'd0"}) == "0"
+    assert param_default({"type": "int", "default": "6'h24"}) == "36"
+    assert param_default({"type": "int", "default": "8'sh80"}) == "-128"
+    assert param_default({"type": "logic [7:0]", "default": "8'd3"}) == "8'd3"
+    assert param_default({"type": "int", "default": "4'bxx01"}) == "4'bxx01"
+    assert _param_header({"params": [{"name": "S", "type": "int", "default": "8'd2"}]}) == "#(parameter int S = 2) "   # 하니스 래퍼도
+    if not shutil.which("verilator"):
+        pytest.skip("verilator 없음")
+    raw = copy.deepcopy(LIB["pkt_parser"].raw)
+    raw["params"] = [*raw.get("params", []), {"name": "S_IDLE", "type": "int", "default": "8'd0"},
+                     {"name": "S_RUN", "type": "int", "default": "8'd1", "local": True}]
+    m = Module(raw)
+    (tmp_path / "pkt_parser.sv").write_text(emit(m, {m.name: m}).text)
+    r = subprocess.run(["verilator", "--lint-only", "-Wall", "-Wno-UNUSEDPARAM", "--top-module", "pkt_parser", "pkt_parser.sv"],
+                       cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_function_final_return_emitted_as_name_assignment(tmp_path):
+    """Yosys는 function의 `return`을 읽지 못한다 (RTL-BenchLS origen_159737 c1). 마지막 `return e;`는 `<이름> = e;`로 쓴다."""
+    from pipeline.emitter.sv import _fn_body
+
+    f = {"kind": "function", "name": "f", "body": "r = x;\nfor (int k = 0; k < 3; k++) begin\n  r = r + 8'd1;\nend\nreturn r;\n"}
+    assert _fn_body(f).split("\n")[4] == "f = r;" and _fn_body(f).count("\n") == f["body"].count("\n")
+    assert _fn_body({**f, "kind": "task"}) == f["body"]
+    early = {"kind": "function", "name": "g", "body": "if (x) begin\n  return 1'b1;\nend\nreturn 1'b0;"}
+    assert _fn_body(early) == "if (x) begin\n  return 1'b1;\nend\ng = 1'b0;"
+    if not shutil.which("yosys"):
+        pytest.skip("yosys 없음")
+    src = ("module t(input logic [7:0] a, output logic [7:0] y);\n  function automatic logic [7:0] f(input logic [7:0] x);\n"
+           "    logic [7:0] r;\n" + "\n".join("    " + ln for ln in _fn_body(f).splitlines()) + "\n  endfunction\n"
+           "  assign y = f(a);\nendmodule\n")
+    (tmp_path / "t.sv").write_text(src)
+    r = subprocess.run(["yosys", "-q", "-p", "read_verilog -sv t.sv; prep -top t"], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_instance_binding_of_int_param_emitted_as_decimal():
+    """하위 모듈의 int 파라미터에 `8'd0`을 바인딩해도 10진수로 쓴다 (RTL-BenchLS rtlpp_07499: 바인딩 쪽이 남아 폭 경고)."""
+    child = {"module": "leaf", "role": "module", "params": [{"name": "S", "type": "int", "default": "0"}],
+             "domains": [], "ports": [{"name": "a", "dir": "input", "type": "logic", "domain": None},
+                                      {"name": "y", "dir": "output", "type": "logic", "domain": None, "kind": "wire"}],
+             "blocks": [{"id": "k", "kind": "comb", "body": "y = a;", "reads": ["a"], "writes": ["y"]}]}
+    top = {"module": "tp", "role": "module", "domains": [],
+           "ports": [{"name": "a", "dir": "input", "type": "logic", "domain": None},
+                     {"name": "y", "dir": "output", "type": "logic", "domain": None, "kind": "wire"}],
+           "instances": [{"name": "u", "module": "leaf", "params": {"S": "8'd2"}}],
+           "connections": [{"id": "c1", "from": "self.a", "to": "u.a"}, {"id": "c2", "from": "u.y", "to": "self.y"}]}
+    lib = {"leaf": Module(child), "tp": Module(top)}
+    assert "leaf #(.S(2)) u (" in emit(lib["tp"], lib).text
+
+
+def test_fn_body_return_at_line_end():
+    """Yosys가 읽지 못하는 `return`을 함수 이름 대입으로 바꾼다: 줄 끝에 붙은 마지막 return도 (ChipVerilog fpu_div lzc53)."""
+    from pipeline.emitter.sv import _fn_body
+    f = {"kind": "function", "name": "lzc", "body": "r = 0; for (i = 0; i < 4; i = i + 1) begin if (x[i]) r = i; end return r;"}
+    assert _fn_body(f).endswith("end lzc = r;")
+    assert _fn_body({"kind": "function", "name": "g", "body": "if (a) return 1;\nr = 2;"}) == "if (a) return 1;\nr = 2;"
