@@ -467,9 +467,13 @@ def _scored(status: str, chosen_ok: bool, c_ok: list[bool | None]) -> dict:
     cands = {f"c{i}": {"lang": "sv", "pipeline_ok": status == "pass", "repairs": 0, "py_equiv": {},
                        "bench_eval": {"ok": False, "skipped": "IR 미생성"} if ok is None else {"ok": ok, "stage": "sim"}, "ppa": None}
              for i, ok in enumerate(c_ok)}
-    return {"rep": {"status": status, "chosen": {"m": 0} if status == "pass" else None, "review": [], "agent_runs": 3},
-            "auto_decs": [], "candidates": cands, "eval_root": Path("/nonexistent"),
-            "bench_pass_chosen": chosen_ok, "bench_pass_any": chosen_ok or any(c_ok), "ppa_chosen": None}
+    from experiments.bench.common.runner import select_golden
+    rep = {"status": status, "chosen": {"m": 0} if status == "pass" else None, "review": [], "agent_runs": 3,
+           "candidates": {f"m/c{i}": {"status": "pass" if ok else "failed"} for i, ok in enumerate(c_ok) if ok is not None}}
+    golden = select_golden(rep, cands, chosen_ok)
+    return {"rep": rep, "auto_decs": [], "candidates": cands, "eval_root": Path("/nonexistent"),
+            "bench_pass_chosen": chosen_ok, "bench_pass_any": chosen_ok or any(c_ok), "ppa_chosen": None,
+            "golden": golden, "golden_pass": golden is not None}
 
 
 def test_ext_fix_trigger():
@@ -478,7 +482,9 @@ def test_ext_fix_trigger():
     item = BenchItem(benchmark="rtllm", id="x", category="sequential", top="x", prompt_text="", header_sv="")
     assert ext_fix_trigger(item, _scored("pass", True, [True, True])) is None
     assert ext_fix_trigger(item, _scored("pass", False, [False, False])) == "external_fail"
-    assert ext_fix_trigger(item, _scored("waiting_approval", False, [True, False])) == "internal_mismatch"
+    assert ext_fix_trigger(item, _scored("waiting_approval", False, [True, False])) is None   # 통과 후보를 golden으로 골라 보정 불필요
+    no_golden = {**_scored("waiting_approval", False, [True, False]), "golden": None, "golden_pass": False}
+    assert ext_fix_trigger(item, no_golden) == "internal_mismatch"
     assert ext_fix_trigger(item, _scored("failed", False, [None, None])) is None          # 채점까지 간 후보가 없음: 근거 없음
     assert ext_fix_trigger(item, _scored("paused_quota", False, [False, None])) is None
     item.eval = EvalSpec(kind="yosys_lec")
@@ -511,6 +517,132 @@ def test_run_bench_item_ext_fix_keeps_first_result(tmp_path: Path, monkeypatch):
     s = write_summary([res], tmp_path / "out")
     assert s["counts"]["bench_pass_chosen"] == 0 and s["counts"]["bench_pass_chosen_final"] == 1
     assert "외부 TB 보정 뒤" in (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+
+
+def test_select_golden_prefers_pipeline_then_external_tb():
+    """파이프라인이 고른 후보가 외부 TB를 통과하면 그것, 못 골랐으면 외부 TB를 통과한 후보(파이프라인 통과·Repair 적은 순)를 golden으로."""
+    from experiments.bench.common.runner import select_golden
+    cands = lambda *oks, repairs=(0, 0), pipe=(True, True): {   # noqa: E731
+        f"c{i}": {"pipeline_ok": pipe[i], "repairs": repairs[i], "bench_eval": {"ok": ok, "stage": "sim"}} for i, ok in enumerate(oks)}
+    rep = {"chosen": {"a": 0, "b": 0}, "candidates": {"a/c0": {}, "b/c0": {}, "a/c1": {}, "b/c1": {}}}
+    assert select_golden(rep, cands(True, False), True) == {"chosen": {"a": 0, "b": 0}, "by": "pipeline", "candidate": 0}
+    g = select_golden({**rep, "chosen": None}, cands(False, True), False)
+    assert g == {"chosen": {"a": 1, "b": 1}, "by": "external_tb", "candidate": 1}
+    g = select_golden({**rep, "chosen": None}, cands(True, True, repairs=(2, 1), pipe=(True, True)), False)
+    assert g["candidate"] == 1                                       # Repair가 적은 후보
+    g = select_golden({**rep, "chosen": None}, cands(True, True, repairs=(2, 1), pipe=(True, False)), False)
+    assert g["candidate"] == 0                                       # 파이프라인 통과 후보가 먼저
+    assert select_golden({**rep, "chosen": None}, cands(False, False), False) is None
+
+
+def test_repair_trigger_needs_spec_gaps_and_candidate():
+    from experiments.bench.common.runner import repair_trigger, spec_gaps
+    item = BenchItem(benchmark="rtllm", id="x", category="sequential", top="x", prompt_text="", header_sv="")
+    sc = _scored("failed", False, [False, False])
+    sc["candidates"]["c1"]["pipeline_ok"] = True
+    assert repair_trigger(item, sc) is None                          # 미정의 동작이 없음: Repair가 고칠 근거 없음
+    sc["rep"]["review"] = [{"code": "UNDEFINED", "message": "EXC-06 미정의: rempty=1인 동안 rdata 값"},
+                           {"code": "ASSUMPTION", "message": "[spec_gap, reset] wfull=1일 때의 winc=1 쓰기는 막는다"},
+                           {"code": "ASSUMPTION", "message": "[timing] 그레이 포인터는 1사이클 늦게 래치"}]
+    assert spec_gaps(sc) == ["EXC-06 미정의: rempty=1인 동안 rdata 값", "[spec_gap, reset] wfull=1일 때의 winc=1 쓰기는 막는다"]
+    assert repair_trigger(item, sc) == 1                             # 파이프라인을 통과한 후보를 들여온다
+    assert repair_trigger(item, _scored("pass", True, [True, False])) is None
+    assert repair_trigger(item, {**sc, "rep": {**sc["rep"], "sim_model": True}}) is None
+    item.eval = EvalSpec(kind="yosys_lec")
+    assert repair_trigger(item, sc) is None
+
+
+def test_run_bench_item_external_repair_round_then_golden(tmp_path: Path, monkeypatch):
+    """외부 TB 실패 + SPEC 미정의 동작이면 SPEC을 고치기 전에 같은 SPEC으로 외부 TB를 보며 Repair하는 회차(ext_repair)를 돌린다.
+    그 회차에서 외부 TB를 통과한 후보가 있으면 golden으로 골라 최종 PASS이고 SPEC 보정 회차는 돌지 않는다."""
+    from experiments.bench.common import runner as rmod
+
+    spec_dir = tmp_path / "out" / "spec"
+    spec_dir.mkdir(parents=True)
+    shutil.copy(G / "block_spec.md", spec_dir / "spec.md")
+    first = _scored("failed", False, [False, False])
+    first["rep"]["review"] = [{"code": "UNDEFINED", "message": "EXC-06 미정의: rempty=1인 동안 rdata 값"}]
+    first["candidates"]["c1"]["pipeline_ok"] = True
+    repaired = _scored("failed", False, [True, None])                # 들여온 c0만 돌고 외부 TB 통과, 파이프라인 판정은 실패
+    runs = iter([first, repaired])
+    calls = []
+    monkeypatch.setattr(rmod, "run_and_score", lambda item, run_dir, eval_root, spec, *a, **k: (calls.append((run_dir.parent.name, k)), next(runs))[1])
+    monkeypatch.setattr(rmod, "_ext_fix_spec", lambda *a: (_ for _ in ()).throw(AssertionError("SPEC 보정은 돌지 않아야 함")))
+
+    item = BenchItem(benchmark="rtllm", id="axis_adapter", category="sequential", top="axis_adapter", prompt_text="", header_sv="")
+    res = rmod.run_bench_item(item, tmp_path / "out", Roles({}, {"author": 2}, {}), isolate=False, ext_fix_rounds=1)
+    assert [c[0] for c in calls] == ["out", "ext_repair"]
+    seed = calls[1][1]["seed"]
+    assert seed["kind"] == "external_repair" and seed["candidate"] == 1 and seed["parent"].endswith("/out/run") and calls[1][1]["skip_verifier"]
+    assert res.bench_pass_chosen is False and res.bench_pass_chosen_final and res.bench_pass_any_final
+    assert res.golden == {"chosen": {"m": 0}, "by": "external_tb", "candidate": 0, "round": 0}
+    assert len(res.ext_fix) == 1 and res.ext_fix[0]["trigger"] == "external_repair" and res.ext_fix[0]["seed_candidate"] == 1
+    assert res.ext_fix[0]["spec_gaps"] == ["EXC-06 미정의: rempty=1인 동안 rdata 값"]
+    write_summary([res], tmp_path / "out")
+    text = (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+    assert "1회 (미정의 Repair)" in text and "외부 TB로 c0 선택 PASS" in text
+
+
+def test_run_bench_item_golden_without_rounds(tmp_path: Path, monkeypatch):
+    """첫 실행에서 파이프라인이 못 골랐어도 외부 TB를 통과한 후보가 있으면 그것이 golden이고 보정 회차는 없다."""
+    from experiments.bench.common import runner as rmod
+    spec_dir = tmp_path / "out" / "spec"
+    spec_dir.mkdir(parents=True)
+    shutil.copy(G / "block_spec.md", spec_dir / "spec.md")
+    monkeypatch.setattr(rmod, "run_and_score", lambda *a, **k: _scored("failed", False, [False, True]))
+    item = BenchItem(benchmark="rtllm", id="axis_adapter", category="sequential", top="axis_adapter", prompt_text="", header_sv="")
+    res = rmod.run_bench_item(item, tmp_path / "out", Roles({}, {"author": 2}, {}), isolate=False, ext_fix_rounds=1)
+    assert res.ext_fix == [] and res.bench_pass_chosen is False and res.bench_pass_chosen_final
+    assert res.golden == {"chosen": {"m": 1}, "by": "external_tb", "candidate": 1, "round": None}
+
+
+def test_run_spec_gaps_and_external_evidence(tmp_path: Path):
+    """Run은 SPEC 검사의 UNDEFINED 항목과 Architect의 spec_gap 가정을 외부 TB 실패 항목에 붙인다 (Repair가 TB 기대값으로 정하도록)."""
+    from pipeline.scheduler.run import Run
+    run = Run(tmp_path / "run", _tick_spec(tmp_path), _fake_roles(tmp_path, {}), isolate=False)
+    run.state["review"] = [{"code": "UNDEFINED", "message": "EXC-01 미정의: 비정규 입력의 결과"}, {"code": "ASSUMPTION", "message": "x"}]
+    run.state["steps"]["architect"] = {"assumptions": [{"affects": ["spec_gap"], "text": "오버플로는 무한대로 낸다"},
+                                                       {"affects": ["timing"], "text": "지연 2"}]}
+    assert run.spec_gaps() == ["EXC-01 미정의: 비정규 입력의 결과", "Architect 가정: [spec_gap] 오버플로는 무한대로 낸다"]
+    ev = run.external_evidence({"ok": False, "stage": "sim", "diagnosis": "자체 검사 10개 중 8개 일치.", "tb_files": {"tb.v": "..."}, "log_tail": "x"})
+    assert ev["spec_gaps"][0].startswith("EXC-01") and ev["external_tb"]["diagnosis"].startswith("자체 검사")
+    assert ev["external_tb"]["tb_files"] == {"tb.v": "..."} and "미정의" in ev["external_tb"]["note"]
+    assert "log_tail" not in ev["external_tb"]
+
+
+def test_seed_modules_takes_candidate_when_parent_chose_none(tmp_path: Path):
+    """부모 실행이 후보를 고르지 못했어도 seed["candidate"]가 지정한 후보의 모듈 IR을 c0으로 들여온다."""
+    from pipeline.scheduler.run import Run
+    parent = tmp_path / "parent"
+    (parent / "modules").mkdir(parents=True)
+    tree = {"top": {"module": "tick"}, "children": {"m": {"role": "module"}, "cell": {"role": "external"}}}
+    (parent / "state.json").write_text(json.dumps({"steps": {"architect": tree}, "chosen": None}), encoding="utf-8")
+    (parent / "modules" / "m__c1.json").write_text(json.dumps({"ir": {"module": "m", "blocks": []}}), encoding="utf-8")
+    run = Run(tmp_path / "run", _tick_spec(tmp_path), _fake_roles(tmp_path, {}), isolate=False, external_tb=lambda *a: {"ok": True},
+              seed={"parent": str(parent), "kind": "external_repair", "candidate": 1, "failures": {}})
+    run.seed_modules(run.parent_state())
+    st = run.modules()["m/c0"]
+    assert st["from_parent"] == "m/c1" and st["ir"]["module"] == "m" and st["status"] == "running"
+    assert run.state["author_count"] == 1
+
+
+def test_external_tb_files_excludes_reference(tmp_path: Path):
+    from experiments.bench.common.runner import external_tb_files
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "testbench.v").write_text("module tb; endmodule\n", encoding="utf-8")
+    (src / "expected.txt").write_text("1\n", encoding="utf-8")
+    (src / "ref.v").write_text("module ref; endmodule\n", encoding="utf-8")
+    item = BenchItem("rtllm", "x", "sequential", "x", "", "", reference_rtl=[str(src / "ref.v")],
+                     eval=EvalSpec(tb_files=[str(src / "testbench.v")]))
+    assert external_tb_files(item) == {"expected.txt": "1\n", "testbench.v": "module tb; endmodule\n"}
+    des = tmp_path / "des"
+    des.mkdir()
+    (des / "ref.v").write_text("module ref; endmodule\n", encoding="utf-8")
+    (des / "ref_TB.v").write_text("module ref_tb; endmodule\n", encoding="utf-8")
+    cv = BenchItem("chipverilog", "y", "standalone", "y", "", "", reference_rtl=[str(des / "ref.v")], eval=EvalSpec(kind="chipverilog"))
+    assert external_tb_files(cv) == {"ref_TB.v": "module ref_tb; endmodule\n"}
+    assert external_tb_files(BenchItem("x", "z", "c", "z", "", "", eval=EvalSpec(kind="yosys_lec"))) == {}
 
 
 # -- 시뮬레이션 모델 경로 --
@@ -816,3 +948,11 @@ def test_chipverilog_diagnose_sim():
     d = diagnose_sim(lag, tb)
     assert "1 검사 간격 늦게" in d and "길다" in d
     assert diagnose_sim("no checks here") == ""
+    # 틀린 검사마다 입력(TB 대입을 검사 순서로 묶음)·기대·실제: 미정의 입력(특수값)인지 Repair가 알아보게
+    from experiments.bench.adapters.chipverilog import tb_stimuli
+    tb2 = ("rst = 1'b1;\nopa = 64'b0100;\nopb = 64'h0001;\n#10;\nopa = 64'b1111;\nopb = 64'hfff0_0000;\n"
+           "if (out==64'h1111) ...\nif (out==64'h2222)\n")
+    assert tb_stimuli(tb2) == [{"opa": "4", "opb": "0001"}, {"opa": "f", "opb": "fff00000"}]   # rst는 피연산자보다 드물어 뺀다
+    two = "   1ps Answer is correct 1111\n   2ps Error! out is incorrect 0000\n"
+    d = diagnose_sim(two, tb2)
+    assert "검사 2: 입력 {'opa': 'f', 'opb': 'fff00000'} 기대 2222 실제 0000" in d

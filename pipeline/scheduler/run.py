@@ -504,10 +504,14 @@ class Run:
         return tbs
 
     def seed_modules(self, ps: dict) -> None:
-        """이전 실행에서 고른 모듈 IR을 후보 하나(c0)로 들여온다. 다시 쓰지 않고 검증부터 한다."""
+        """이전 실행에서 고른 모듈 IR을 후보 하나(c0)로 들여온다. 다시 쓰지 않고 검증부터 한다.
+        부모가 고르지 못했으면(내부 테스트 실패) seed["candidate"]가 지정한 후보 번호의 모듈 IR을 들여온다."""
         tree = ps["steps"]["architect"]
+        seed = self.state["seed"]
         chosen = ps.get("chosen") or {}
-        parent = Path(self.state["seed"]["parent"])
+        if not chosen and seed.get("candidate") is not None:
+            chosen = {m: int(seed["candidate"]) for m, ch in tree["children"].items() if ch.get("role") == "module"}
+        parent = Path(seed["parent"])
         for m, ch in tree["children"].items():
             if ch.get("role") != "module" or m not in chosen:
                 continue
@@ -611,7 +615,7 @@ class Run:
                     stage = ext_r.get("stage", "sim")
                     rule = "SIM_TIMEOUT" if stage == "sim_timeout" else "AssertionError"
                     msg = ext_r.get("log_tail") or ext_r.get("error") or "외부 테스트벤치 실패"
-                    findings = [{"test": "external_tb", "rule": rule, "message": str(msg)[:800]}]
+                    findings = [{"test": "external_tb", "rule": rule, "message": str(msg)[:800], **self.external_evidence(ext_r)}]
                 e2.append({"verifier": "ext", "ok": ext_ok, "findings": findings, "out": str(ext_dir)})
         else:
             for k, tb in enumerate([] if frag_lint else tbs):
@@ -638,6 +642,23 @@ class Run:
             if r.get("scoreboard") or r.get("protocol") or r.get("properties"):
                 return res.name.removesuffix(".result.json")
         return None
+
+    def spec_gaps(self) -> list[str]:
+        """SPEC이 정하지 않은 동작 목록: SPEC 검사의 UNDEFINED 항목과 Architect가 spec_gap으로 표시한 가정.
+        외부 TB 실패가 이런 입력에서 났으면 Repair가 TB 기대값을 따라 정하도록 실패 항목에 붙인다."""
+        gaps = [r["message"] for r in self.state.get("review", []) if r.get("code") == "UNDEFINED"]
+        tree = self.state.get("steps", {}).get("architect") or {}
+        for a in tree.get("assumptions") or []:
+            if "spec_gap" in (a.get("affects") or []):
+                gaps.append("Architect 가정: " + _assumption(a))
+        return list(dict.fromkeys(gaps))
+
+    def external_evidence(self, ext_r: dict) -> dict:
+        """외부 TB(채점 기준) 실패 항목에 붙이는 근거: 미정의 동작 목록, 한 줄 진단, 테스트 원문과 기대값 파일."""
+        out: dict = {"spec_gaps": self.spec_gaps(), "external_tb": {k: ext_r[k] for k in ("stage", "diagnosis", "tb_files") if ext_r.get(k)}}
+        out["external_tb"]["note"] = ("외부 테스트벤치는 채점 기준이다. 실패한 검사의 입력이 spec_gaps의 미정의 동작에 해당하면 "
+                                      "tb_files의 기대값이 맞는 동작이므로 그 동작을 IR에 넣는다. SPEC이 정한 동작은 TB에 맞추려고 바꾸지 않는다")
+        return out
 
     def failure_report(self, lib: dict, top: str, v: dict) -> dict:
         out = Path(v["out"])

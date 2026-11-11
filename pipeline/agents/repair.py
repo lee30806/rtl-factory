@@ -28,7 +28,12 @@ TASK = """\
 - `ir.json`: 지금 IR
 - `failure.json`: 실패 리포트. `classified`는 실패 유형과 대상 노드, `report`는 첫 불일치(기댓값과 실제값),
   그 전후의 FSM 상태, 불일치 출력의 팬인 노드와 신호 값, 관련 SPEC 구절이다.
-  `arbiter_verdict`가 있으면 Arbiter가 SPEC을 근거로 판정한 **수정 사유**(`reason`, `reqs`, `proposal`)다
+  `arbiter_verdict`가 있으면 Arbiter가 SPEC을 근거로 판정한 **수정 사유**(`reason`, `reqs`, `proposal`)다.
+  `classified` 항목에 `external_tb`가 있으면 외부 테스트벤치(채점 기준) 실패다: `external_tb.tb_files`가 테스트 원문과 기대값 파일,
+  `external_tb.diagnosis`가 출력 패턴 진단, `spec_gaps`가 SPEC이 정하지 않은 동작 목록이다. 실패한 검사의 입력이 미정의 동작에
+  해당하면(예: 특수값, 리셋 직후, 비어 있을 때 읽기) 테스트의 기대값을 맞는 동작으로 보고 그 동작을 IR에 넣는다.
+  SPEC이 정한 동작은 테스트에 맞추려고 바꾸지 않는다. 실패가 SPEC이 정한 동작과 테스트 기대값의 차이에서 났으면 patch 대신
+  `{out}`에 `[{{"op": "request_interface_change", "reason": "[SPEC-TB 불일치] ..."}}]`를 써서 SPEC 보정 단계로 넘긴다
 - `history.json`: 이전에 적용한 patch (같은 patch를 반복하지 않는다)
 - `spec.md`: SPEC. 무엇이 맞는 동작인지는 SPEC이 정한다
 - `guide.md`: IR 작성 안내. IR의 `lang`이 `py`면 body와 cond는 Python 조각이다 (안내의 "Python 조각" 절).

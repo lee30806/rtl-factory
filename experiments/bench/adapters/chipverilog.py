@@ -92,6 +92,32 @@ def dedupe_modules(text: str) -> tuple[str, list[str]]:
 
 _CHECK_RE = re.compile(r"^\s*\d+\s*ps\s+(Answer is correct|Error! \S+ is incorrect)\s+([0-9a-fA-Fxz]+)", re.M)
 _EXPECT_RE = re.compile(r"==\s*\d+'h([0-9a-fA-F_]+)")
+_STIM_RE = re.compile(r"^\s*(\w+)\s*=\s*\d+'([bh])([0-9a-fA-F_]+)\s*;", re.M)
+
+
+def tb_stimuli(tb_text: str) -> list[dict[str, str]]:
+    """TB 원문의 입력 대입(`opa = 64'b...;`)을 검사 순서대로 묶는다. 가장 자주 대입되는 신호들(피연산자)만 보고
+    clk, rst, enable처럼 몇 번만 대입되는 신호는 뺀다. 같은 이름이 다시 나오면 다음 검사 입력. 값은 16진수로."""
+    found = _STIM_RE.findall(tb_text)
+    if not found:
+        return []
+    counts: dict[str, int] = {}
+    for name, _, _ in found:
+        counts[name] = counts.get(name, 0) + 1
+    top = max(counts.values())
+    recs: list[dict[str, str]] = []
+    cur: dict[str, str] = {}
+    for name, base, val in found:
+        if counts[name] != top:
+            continue
+        if name in cur:
+            recs.append(cur)
+            cur = {}
+        v = val.replace("_", "")
+        cur[name] = format(int(v, 2), "x") if base == "b" else v.lower()
+    if cur:
+        recs.append(cur)
+    return recs
 
 
 def diagnose_sim(sim_log: str, tb_text: str = "") -> str:
@@ -107,7 +133,12 @@ def diagnose_sim(sim_log: str, tb_text: str = "") -> str:
     if len(actual) > 1 and len(set(actual)) == 1:
         parts.append("모든 검사 시점에 출력이 같은 값이다: 연속 입력이 순서대로 나오지 않으므로 파이프라인 깊이(지연)나 enable 처리를 먼저 의심할 것")
     expected = [v.lower().replace("_", "") for v in _EXPECT_RE.findall(tb_text)] if tb_text else []
+    stim = tb_stimuli(tb_text) if tb_text else []
     if expected and len(expected) == len(actual) and n_ok < len(actual):
+        # 틀린 검사마다 입력(있으면)·기대·실제를 적는다: Repair가 특수값(비정규, 오버플로) 같은 미정의 입력을 알아보게
+        bad = [i for i, (k, _) in enumerate(checks) if not k.startswith("Answer")][:5]
+        parts += [f"검사 {i + 1}: " + (f"입력 {stim[i]} " if len(stim) == len(actual) else "")
+                  + f"기대 {expected[i]} 실제 {actual[i]}" for i in bad]
         best_k, best_hits = 0, 0
         for k in range(-(len(actual) - 1), len(actual)):
             hits = sum(1 for i, a in enumerate(actual) if 0 <= i - k < len(expected) and a == expected[i - k])

@@ -80,12 +80,18 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
 
 
 def _ext_cell(r: BenchResult) -> str:
-    """외부 TB 보정 칸: 회차 수, 계기, 마지막 회차의 상태와 선택 후보 외부 TB 결과."""
-    if not r.ext_fix:
+    """외부 TB 보정 칸: 회차 수(Repair 회차 포함), 마지막 계기와 상태, 외부 TB로 고른 golden 후보, 최종 외부 TB 결과."""
+    parts = []
+    if r.ext_fix:
+        last = r.ext_fix[-1]
+        trig = {"external_fail": "외부 실패", "internal_mismatch": "내부 불일치", "external_repair": "미정의 Repair"}.get(
+            last.get("trigger"), last.get("trigger"))
+        parts.append(f"{len(r.ext_fix)}회 ({trig}) `{last.get('pipeline_status')}`")
+    if r.golden and r.golden.get("by") == "external_tb":
+        parts.append(f"외부 TB로 c{r.golden.get('candidate')} 선택")
+    if not parts:
         return "-"
-    last = r.ext_fix[-1]
-    trig = {"external_fail": "외부 실패", "internal_mismatch": "내부 불일치"}.get(last.get("trigger"), last.get("trigger"))
-    return f"{len(r.ext_fix)}회 ({trig}) `{last.get('pipeline_status')}` {'PASS' if r.bench_pass_chosen_final else 'FAIL'}"
+    return " ".join(parts) + (" PASS" if r.bench_pass_chosen_final else " FAIL")
 
 
 def _lec_cell(r: BenchResult) -> str:
@@ -142,8 +148,8 @@ def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
         f"- **Pipeline Pass**: {summary.get('counts', {}).get('pipeline_pass', 0)}/{summary['total']} ({summary.get('rates', {}).get('pipeline_pass', 0) * 100:.1f}%)",
         f"- **Bench Pass (`pass@1` chosen)**: {summary.get('counts', {}).get('bench_pass_chosen', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_chosen', 0) * 100:.1f}%)",
         f"- **Bench Pass (any candidate)**: {summary.get('counts', {}).get('bench_pass_any', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_any', 0) * 100:.1f}%)",
-        f"- **외부 TB 보정 뒤 (chosen)**: {summary.get('counts', {}).get('bench_pass_chosen_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_chosen_final', 0) * 100:.1f}%)"
-        f" — 보정한 문제 {summary.get('counts', {}).get('ext_fix_items', 0)}개. 외부 TB를 근거로 SPEC을 고친 결과라 pass@1이 아님",
+        f"- **최종 (golden, 외부 TB 보정 뒤)**: {summary.get('counts', {}).get('bench_pass_chosen_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_chosen_final', 0) * 100:.1f}%)"
+        f" — 보정한 문제 {summary.get('counts', {}).get('ext_fix_items', 0)}개. 외부 TB를 통과한 후보를 golden으로 고르고 외부 TB를 근거로 Repair·SPEC 보정을 한 결과라 pass@1이 아님",
         f"- **외부 TB 보정 뒤 (any candidate)**: {summary.get('counts', {}).get('bench_pass_any_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_any_final', 0) * 100:.1f}%)",
         f"- **시뮬레이션 모델 (합성, PPA 없음)**: {sum(r.sim_model for r in results)}/{summary['total']}",
         "",

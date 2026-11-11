@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -143,15 +144,17 @@ def run_pipeline_unattended(
     max_modules: int | None = None,
     external_tb: Any = None,
     incdirs: list[Path] | None = None,
+    seed: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Run.execute()를 실행하고 waiting_approval 발생 시 auto_decide로 자동 결정하며 수렴할 때까지 반복한다."""
+    """Run.execute()를 실행하고 waiting_approval 발생 시 auto_decide로 자동 결정하며 수렴할 때까지 반복한다.
+    seed: 이전 실행의 모듈 트리와 후보 IR을 들여와 검증부터 다시 하는 재실행 (Run.seed_modules)."""
     run_dir = Path(run_dir).resolve()
     spec_path = Path(spec_path).resolve()
     auto_history: list[dict[str, Any]] = []
 
     while True:
         runner = Run(run_dir, spec_path, roles, cells=cells, isolate=isolate, max_modules=max_modules, external_tb=external_tb,
-                     incdirs=incdirs)
+                     incdirs=incdirs, seed=seed)
         rep = runner.execute()
         if rep["status"] != "waiting_approval" or not auto_approve:
             return rep, auto_history
@@ -227,6 +230,24 @@ def _prepare_iverilog_tb(item: BenchItem, tb_src_files: list[Path], eval_dir: Pa
         dst_tb.write_text(tb_txt, encoding="utf-8")
         local_tbs.append(dst_tb)
     return local_tbs
+
+
+TB_FILE_CHARS = 8000
+
+
+def external_tb_files(item: BenchItem) -> dict[str, str]:
+    """Repair에 주는 외부 TB 원문과 기대값 파일 (채점에 쓴 보정을 거친 것). 정답 RTL은 넣지 않는다. 파일마다 앞부분만 자른다."""
+    if item.eval.kind == "iverilog" and item.eval.tb_files:
+        with tempfile.TemporaryDirectory() as tmp:
+            tb_dir = ext_fix.tb_bundle(item, Path(tmp) / "tb", _prepare_iverilog_tb)
+            files = sorted(f for f in tb_dir.iterdir() if f.is_file())
+            return {f.name: f.read_text(encoding="utf-8", errors="replace")[:TB_FILE_CHARS] for f in files}
+    if item.eval.kind == "chipverilog" and item.reference_rtl:
+        des = Path(item.reference_rtl[0]).parent
+        ref = {Path(p).resolve().name for p in item.reference_rtl}
+        return {f.name: f.read_text(encoding="utf-8", errors="replace")[:TB_FILE_CHARS]
+                for f in sorted(des.glob("*.v")) if f.name not in ref and re.search(r"tb|test", f.name, re.I)}
+    return {}
 
 
 def evaluate_rtl(item: BenchItem, sv_files: list[Path], eval_dir: Path) -> dict[str, Any]:
@@ -515,11 +536,25 @@ def run_bench_item(
     first = run_and_score(item, out_dir / "run", out_dir / "eval", spec_path, roles, cells, **opts)
     agent_runs = spec_agent_runs + int(first["rep"].get("agent_runs", 0))
 
-    # 외부 TB 보정: 첫 결과(pass@1)는 그대로 두고, 고친 SPEC으로 다시 돌린 결과는 ext_fix에 따로 남긴다
+    # 외부 TB 보정: 첫 결과(pass@1)는 그대로 두고, 고친 결과는 ext_fix에 따로 남긴다.
+    # 먼저 SPEC 미정의 동작이 원인일 수 있으면 같은 SPEC으로 Repair가 외부 TB 증거를 보고 고치고(ext_repair),
+    # 그래도 안 되면 외부 TB 결과로 SPEC을 고쳐 다시 돌린다(ext1..).
     rounds: list[dict[str, Any]] = []
     status = first["rep"].get("status", "failed")
-    last, cur_spec = first, spec_path
+    last, cur_spec, last_round = first, spec_path, None
+    if ext_fix_rounds > 0 and not skip_verifier and (k := repair_trigger(item, first)) is not None:
+        rdir = out_dir / "ext_repair"
+        seed = {"parent": str(out_dir / "run"), "kind": "external_repair", "candidate": k, "failures": {}}
+        last = run_and_score(item, rdir / "run", rdir / "eval", spec_path, roles, cells, **{**opts, "skip_verifier": True}, seed=seed)
+        agent_runs += int(last["rep"].get("agent_runs", 0))
+        last_round = 0
+        rounds.append({"round": 0, "trigger": "external_repair", "seed_candidate": k, "spec_gaps": spec_gaps(first),
+                       "spec": str(spec_path), "changes": [], "spec_errors": [], **_round_fields(last)})
+        if last["rep"].get("status") == "paused_quota":
+            status = "paused_quota"
     for n in range(1, ext_fix_rounds + 1):
+        if status == "paused_quota":
+            break
         trigger = ext_fix_trigger(item, last)
         if trigger is None:
             break
@@ -538,10 +573,8 @@ def run_bench_item(
             break
         last = run_and_score(item, rdir / "run", rdir / "eval", new_spec, roles, cells, **opts)
         agent_runs += int(last["rep"].get("agent_runs", 0))
-        rounds.append({**rnd, "pipeline_status": last["rep"].get("status", "failed"), "chosen": last["rep"].get("chosen"),
-                       "review_codes": sorted({x["code"] for x in last["rep"].get("review", [])}),
-                       "candidates": last["candidates"], "bench_pass_chosen": last["bench_pass_chosen"],
-                       "bench_pass_any": last["bench_pass_any"]})
+        last_round = n
+        rounds.append({**rnd, **_round_fields(last)})
         if last["rep"].get("status") == "paused_quota":
             status = "paused_quota"
             break
@@ -566,13 +599,21 @@ def run_bench_item(
         bench_pass_any=first["bench_pass_any"],
         ppa_chosen=first["ppa_chosen"],
         ext_fix=rounds,
-        bench_pass_chosen_final=last["bench_pass_chosen"],
+        bench_pass_chosen_final=bool(last.get("golden_pass")),
         bench_pass_any_final=first["bench_pass_any"] or any(r.get("bench_pass_any") for r in rounds),
+        golden={**last["golden"], "round": last_round} if last.get("golden") else None,
         sim_model=bool(rep.get("sim_model")),
         lessons=_lessons(out_dir),
     )
     res_file.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return result
+
+
+def _round_fields(scored: dict[str, Any]) -> dict[str, Any]:
+    return {"pipeline_status": scored["rep"].get("status", "failed"), "chosen": scored["rep"].get("chosen"),
+            "review_codes": sorted({x["code"] for x in scored["rep"].get("review", [])}),
+            "candidates": scored["candidates"], "bench_pass_chosen": scored["bench_pass_chosen"],
+            "bench_pass_any": scored["bench_pass_any"], "golden": scored.get("golden")}
 
 
 SPEC_ALARM_RE = re.compile(r"^-\s*Q-\d+\s*(\[(?:LESSON|SPEC 재검토 알람)\]\s*.*)$")
@@ -600,9 +641,16 @@ def _lessons(out_dir: Path) -> list[str]:
 
 def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Path, roles: roles_mod.Roles,
                   cells: list[Path], isolate: bool = True, auto_approve: bool = True, max_auto_approves: int = 3,
-                  max_arch_revisions: int = 1, max_modules: int | None = None, skip_verifier: bool = False) -> dict[str, Any]:
-    """무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정."""
-    ext_tb_fn = (lambda sv_files, _top, eval_dir: evaluate_rtl(item, sv_files, eval_dir)) if skip_verifier else None
+                  max_arch_revisions: int = 1, max_modules: int | None = None, skip_verifier: bool = False,
+                  seed: dict[str, Any] | None = None) -> dict[str, Any]:
+    """무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정 → golden 선택.
+    skip_verifier면 외부 TB가 E2 검증이 되고, 실패 시 Repair가 볼 TB 원문·기대값 파일을 결과에 붙인다."""
+    tb_files = external_tb_files(item) if skip_verifier else {}
+
+    def ext_tb_fn(sv_files, _top, eval_dir):
+        r = evaluate_rtl(item, sv_files, eval_dir)
+        return r if r.get("ok") else {**r, "tb_files": tb_files}
+
     rep, auto_decs = run_pipeline_unattended(
         run_dir,
         spec_path,
@@ -613,8 +661,9 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
         max_auto_approves=max_auto_approves,
         max_arch_revisions=max_arch_revisions,
         max_modules=max_modules,
-        external_tb=ext_tb_fn,
+        external_tb=ext_tb_fn if skip_verifier else None,
         incdirs=[Path(d) for d in item.incdirs],
+        seed=seed,
     )
 
     langs = list(roles.author_langs) if getattr(roles, "author_langs", None) else ["sv"]
@@ -672,14 +721,56 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
     bench_pass_any = bench_pass_chosen or any(
         bool(c.get("bench_eval", {}).get("ok")) for c in candidates_info.values()
     )
+    golden = select_golden(rep, candidates_info, bench_pass_chosen)
+    if golden and golden["by"] == "external_tb":
+        ppa_chosen = candidates_info[f"c{golden['candidate']}"].get("ppa")
     return {"rep": rep, "auto_decs": auto_decs, "candidates": candidates_info, "eval_root": Path(eval_root),
-            "bench_pass_chosen": bench_pass_chosen, "bench_pass_any": bench_pass_any, "ppa_chosen": ppa_chosen}
+            "bench_pass_chosen": bench_pass_chosen, "bench_pass_any": bench_pass_any, "ppa_chosen": ppa_chosen,
+            "golden": golden, "golden_pass": golden is not None}
+
+
+def select_golden(rep: dict[str, Any], candidates_info: dict[str, dict[str, Any]], bench_pass_chosen: bool) -> dict[str, Any] | None:
+    """최종 후보(golden). 파이프라인이 고른 후보가 외부 TB를 통과하면 그것. 아니면 외부 TB가 채점 기준이므로 통과한 후보 가운데
+    파이프라인 통과 후보, 그다음 Repair가 적은 후보를 고른다 (내부 테스트 불일치나 Repair 상한으로 못 고른 경우). 없으면 None."""
+    if bench_pass_chosen:
+        idx = set(rep["chosen"].values())
+        return {"chosen": rep.get("chosen"), "by": "pipeline", "candidate": next(iter(idx)) if len(idx) == 1 else None}
+    passing = [int(k[1:]) for k, c in candidates_info.items() if c.get("bench_eval", {}).get("ok")]
+    if not passing:
+        return None
+    k = min(passing, key=lambda i: (not candidates_info[f"c{i}"]["pipeline_ok"], candidates_info[f"c{i}"]["repairs"], i))
+    mods = sorted({m.rsplit("/c", 1)[0] for m in rep.get("candidates", {}) if m.endswith(f"/c{k}")})
+    return {"chosen": {m: k for m in mods}, "by": "external_tb", "candidate": k}
+
+
+def repair_trigger(item: BenchItem, scored: dict[str, Any]) -> int | None:
+    """외부 Repair 회차를 돌릴 조건: 외부 TB(iverilog, chipverilog) 채점에서 통과한 후보가 없고, SPEC에 미정의 동작이 있어
+    그 입력에서 실패했을 수 있으며, 들여올 후보가 있음. 조건이 맞으면 들여올 후보 번호."""
+    if item.eval.kind not in ("iverilog", "chipverilog") or scored.get("golden_pass") or scored["rep"].get("sim_model") \
+            or scored["rep"].get("status") == "paused_quota" or not spec_gaps(scored):
+        return None
+    return seed_candidate(scored)
+
+
+def seed_candidate(scored: dict[str, Any]) -> int | None:
+    """외부 Repair 회차에 들여올 후보: 파이프라인을 통과한 후보 중 Repair가 적은 것, 없으면 외부 채점까지 간 후보."""
+    cands = [(not c["pipeline_ok"], c["repairs"], int(k[1:])) for k, c in scored["candidates"].items() if c["bench_eval"].get("stage")]
+    return min(cands)[2] if cands else None
+
+
+def spec_gaps(scored: dict[str, Any]) -> list[str]:
+    """첫 실행이 남긴 SPEC 미정의 동작: SPEC 검사의 UNDEFINED 항목과 Architect의 spec_gap 가정 (Run.spec_gaps와 같은 기준)."""
+    rep = scored["rep"]
+    gaps = [r["message"] for r in rep.get("review", []) if r.get("code") == "UNDEFINED"]
+    gaps += [r["message"] for r in rep.get("review", []) if r.get("code") == "ASSUMPTION" and "spec_gap" in r["message"][:60]]
+    return list(dict.fromkeys(gaps))
 
 
 def ext_fix_trigger(item: BenchItem, scored: dict[str, Any]) -> str | None:
     """외부 TB 보정이 필요한 경우: 외부 TB를 통과한 후보가 없음(external_fail) 또는 통과한 후보를 파이프라인이 고르지 못함(internal_mismatch).
     외부 TB 채점(iverilog)이 아니거나, 채점까지 간 후보가 없거나(근거가 없음), 할당량으로 멈췄으면 하지 않는다."""
-    if item.eval.kind != "iverilog" or scored["bench_pass_chosen"] or scored["rep"].get("status") == "paused_quota":
+    if item.eval.kind != "iverilog" or scored["bench_pass_chosen"] or scored.get("golden_pass") \
+            or scored["rep"].get("status") == "paused_quota":
         return None
     if scored["bench_pass_any"]:
         return "internal_mismatch"

@@ -85,6 +85,8 @@ class BenchResult:
     ext_fix: list[dict[str, Any]] = field(default_factory=list)
     bench_pass_chosen_final: bool = False                # 마지막 실행에서 선택된 후보의 외부 TB 통과
     bench_pass_any_final: bool = False                   # 어느 실행이든 외부 TB를 통과한 후보가 있음
+    golden: dict[str, Any] | None = None                 # 최종 후보 {"chosen", "by": pipeline|external_tb, "candidate", "round"}:
+                                                         # 파이프라인이 못 골랐어도 외부 TB를 통과한 후보가 있으면 그것을 고른다
     sim_model: bool = False                              # 시뮬레이션 모델 경로로 처리함 (합성, PPA 없음)
     round_trip: list[dict[str, Any]] = field(default_factory=list)   # B5: R6 회차별 재생성 상태, 원본 비교, 판정, 등가 채점
     lessons: list[str] = field(default_factory=list)     # 헤더 추출이 찾은, 사람이 확인할 결함 (헤더 지시문, 리셋 판정 충돌)
