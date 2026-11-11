@@ -38,6 +38,10 @@ BENCH_SPEC_TASK = """\
 - 제목은 반드시 `# {top} SPEC`으로 쓴다.
 - **2절, 3절, 4절은 `tables.md`의 내용을 글자 하나 바꾸지 않고 그대로 복사해 넣는다.**
 - 1절 (`## 1. 목적과 범위`): 모듈의 목적을 한 문단으로 설명하고, 범위 밖 항목을 명시한다.
+  - **파라미터 값이 본문 수치보다 우선한다:** `header.sv`의 파라미터 기본값(예: DEPTH = 16)과 `prompt.txt` 본문의 구체 수치(예: "깊이 8",
+    "4비트 포인터", "하위 3비트 주소")가 어긋나면 파라미터 값을 따른다. 테스트벤치는 헤더로 인스턴스하므로 파라미터가 실제 계약이고,
+    본문 수치는 다른 설정의 예시로 읽는다. 포인터 폭·주소 폭처럼 파라미터에서 유도되는 수는 파라미터 값으로 다시 계산해 5·7·9절에 쓴다
+    (`notes.json`의 `param_conflicts`가 찾은 충돌이다). 충돌 사실과 택한 값은 10절에 `- Q-xx [LESSON] ...`으로 남긴다.
 - 5절 (`## 5. 기능 요구사항`): `- REQ-01 (필수) ...` 형식으로 모든 출력 포트와 입력 포트가 최소 한 번 이상 등장하도록
   동작을 구체적인 수치·조건·타이밍으로 기술한다.
   - **중요 (`spec_gate` 규칙):** 3절 인터페이스 표에 있는 모든 포트 이름(번들인 경우 번들 이름 또는 하위 신호 이름, 클럭·리셋 제외)이
@@ -56,6 +60,10 @@ BENCH_SPEC_TASK = """\
     결과를 알리는 출력 플래그(예: `o_en`, `valid`, `done`, `rdy`)가 있고 `prompt.txt`가 지연 단 수를 강제하지 않으면 "o_en=1인 사이클의 result는 그 전에 i_en=1로 받은 입력들의
     결과를 받은 순서대로 낸다"처럼 플래그 기준으로 쓰고, 지연은 "구현에 따름(검증하지 않음)"으로 둔다. "여러 단의 레지스터"처럼
     수를 정하지 않은 표현을 특정 사이클 수로 바꾸지 않는다: 지어낸 값은 그와 다른 지연을 가진 맞는 설계를 실패시킨다.
+  - **고정 지연이라고 말한 설계는 지연을 정한다 (템플릿 6절 규칙):** `prompt.txt`가 고정 지연(fixed latency, fixed-latency pipeline)이라고
+    말하면 "구현에 따름"으로 두지 않는다. 지연 수가 적혀 있으면 그 값을, 없으면 단 번호가 붙은 레지스터 나열(예: sign_1 ~ sign_20)이나
+    "N단 파이프라인"에서 가장 큰 단 번호를 지연 사이클 수로 쓴다 (`notes.json`의 `stage_depth_hint`가 이 값이다). 구조에서 읽어낸 값은
+    추정이므로 10절에 `- Q-xx [LESSON] ...`으로 근거와 함께 남긴다.
 - 7절 (`## 7. 예외와 코너 케이스`): `- EXC-01 (필수) ...` 형식으로 리셋 인가 시 모든 출력 포트의 초기값과 경계 조건 동작을 한 줄에 한 문장씩 명시한다.
   - 아래 시뮬레이션 모델이 아닐 때, `tables.md` 2절에서 리셋 포트가 `없음`인 도메인의 출력에는 초기값(시뮬레이션 시작 값)을 쓰지 않는다. `prompt.txt`가 initial 문이나
     초기값을 말해도 그렇다: 파이프라인은 initial 문을 쓸 수 없어 보장할 수 없다. 첫 값이 정해지기 전의 출력은 `- EXC-02 미정의: ...` 형식으로 쓴다
@@ -219,7 +227,10 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
             combined,
         )
     )
-    explicit_sync = bool(re.search(r"\bsync(hronous|hronously)?\s+reset|동기\s*리셋|리셋\s*동기\s*\|\s*동기", text_low))
+    # "synchronous reset" 외에 "rst (..., Synchronous to clk)", "reset synchronized to the clock" 어순도 동기 명시로 본다
+    explicit_sync = bool(re.search(
+        rf"\bsync(?:hronous|hronously)?\s+reset|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchronous(?:ly)?\s+(?:to|with)\b"
+        rf"|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchroni[sz]ed\s+(?:to|with)\b|동기\s*리셋|리셋\s*동기\s*\|\s*동기", text_low))
     if hint_low and not re.search(rf"(?:or|,)\s*(?:posedge|negedge)?\s*{rl}\b", hint_low) and re.search(rf"always\s*@\s*\(\s*(?:posedge|negedge)\s+{ck_l}\s*\)", hint_low):
         is_async = False
     elif explicit_sync and not explicit_async:
@@ -343,6 +354,50 @@ def _inject_dummy_seq_if_empty(sv_text: str, top: str, prompt_text: str, incdirs
     return aug_file
 
 
+_NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+              "sixteen": 16, "thirty-two": 32, "sixty-four": 64}
+
+
+def prompt_param_conflicts(prompt_text: str, params: list[dict]) -> list[str]:
+    """헤더 파라미터 기본값과 프롬프트 본문의 같은 이름 수치가 어긋나는 것을 찾는다 (asyn_fifo: DEPTH = 16 대 "depth 8").
+    파라미터 이름(대소문자 무시)이 숫자와 함께 나오는 자리만 본다. 틀려도 LESSON만 내고 결정은 작성자가 한다."""
+    out: list[str] = []
+    for p in params:
+        name, default = str(p.get("name", "")), str(p.get("default", "")).strip()
+        if not name or not re.fullmatch(r"\d+", default):
+            continue
+        vals: list[str] = []
+        pat = rf"\b{re.escape(name)}\b\s*(?:=|:|is|of|to|for|with)?\s*(?:a\s+)?(\d+|{'|'.join(_NUM_WORDS)})\b"
+        for m in re.finditer(pat, prompt_text, re.I):
+            v = m.group(1).lower()
+            v = str(_NUM_WORDS.get(v, v))
+            if v != default and v not in vals:
+                vals.append(v)
+        if vals:
+            out.append(f"파라미터 충돌: header.sv의 {name}={default}인데 prompt.txt 본문은 {name} {', '.join(vals)}을(를) 말한다. "
+                       f"SPEC은 파라미터 값 {default}을(를) 따르고 본문 수치는 예시로 본다. 사용자가 확인해야 한다.")
+    return out
+
+
+def prompt_stage_depth(prompt_text: str) -> tuple[int | None, str | None]:
+    """고정 지연 설계에서 단 번호 레지스터 나열(sign_1 ~ sign_20)이나 "N-stage pipeline"으로 파이프라인 깊이를 추정한다.
+    고정 지연(fixed latency)이나 파이프라인이라는 말이 없으면 (None, None)."""
+    if not re.search(r"fixed[- ]latency|pipelin|고정\s*지연|파이프라인", prompt_text, re.I):
+        return None, None
+    best, why = 0, None
+    for m in re.finditer(r"\b(\d+)[- ]stage\s+pipeline|\bpipeline\s+(?:of|with)\s+(\d+)\s+stages?|(\d+)\s*단\s*파이프라인", prompt_text, re.I):
+        n = int(next(g for g in m.groups() if g))
+        if n > best:
+            best, why = n, f'prompt.txt의 "{m.group(0)}"'
+    stems: dict[str, set[int]] = {}
+    for m in re.finditer(r"\b([A-Za-z]\w*?)_(\d{1,3})\b", prompt_text):
+        stems.setdefault(m.group(1), set()).add(int(m.group(2)))
+    for stem, nums in stems.items():
+        if len(nums) >= 3 and max(nums) > best:
+            best, why = max(nums), f"prompt.txt의 단 번호 레지스터 {stem}_{min(nums)} ~ {stem}_{max(nums)}"
+    return (best, why) if best else (None, None)
+
+
 def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]:
     """모듈 헤더 SV와 프롬프트에서 Block Top L1과 2~4절 마크다운 표(`tables.md`), `notes.json`을 결정론적으로 추출한다."""
     work_dir = Path(work_dir)
@@ -421,6 +476,14 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
         ],
     }
     tables = spec_tables.tables_md(top_l1)
+    # 프롬프트 본문과 헤더 파라미터의 충돌, 고정 지연 설계의 단 수 힌트는 결정론적으로 찾아 작성자가 놓치지 못하게 LESSON으로 둔다
+    conflicts = prompt_param_conflicts(item.prompt_text, top_l1["params"])
+    lessons.extend(conflicts)
+    depth, depth_why = prompt_stage_depth(item.prompt_text)
+    fixed_latency = bool(re.search(r"fixed[- ]latency|고정\s*지연", item.prompt_text, re.I))
+    if depth and fixed_latency:
+        lessons.append(f"지연 추정: prompt.txt가 고정 지연이라 하지만 지연 수가 없어 {depth_why}로 파이프라인 깊이를 최소 {depth}단으로 보았다. "
+                       f"6절 지연은 이 값을 기준으로 쓰되 사용자가 확인해야 한다.")
     notes = {
         "benchmark": item.benchmark,
         "id": item.id,
@@ -429,6 +492,8 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
         "defines": item.defines,
         "macros": r1_res.get("macros", {}),
         "cells": [Path(c).name for c in item.cells],
+        "param_conflicts": conflicts,
+        "stage_depth_hint": depth if fixed_latency else None,
         "lessons": list(dict.fromkeys(lessons)),
     }
     (work_dir / "top.l1.json").write_text(json.dumps(top_l1, ensure_ascii=False, indent=2), encoding="utf-8")

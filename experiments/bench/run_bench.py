@@ -8,10 +8,15 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import re
 import sys
 import threading
 from pathlib import Path
+
+# 벤치 설계는 작아서 시뮬레이션이 몇 분을 넘기면 멈춘 것이다. 기본 감시 시간(900초)은 멈춤 한 번에 15분을 쓰므로 줄인다.
+# 환경 변수로 이미 정했으면 그 값을 따른다. pipeline을 import하기 전에 정해야 한다.
+os.environ.setdefault("CHIPDEPT_SIM_TIMEOUT", "180")
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:

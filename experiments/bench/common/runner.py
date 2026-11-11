@@ -575,10 +575,27 @@ def run_bench_item(
     return result
 
 
+SPEC_ALARM_RE = re.compile(r"^-\s*Q-\d+\s*(\[(?:LESSON|SPEC 재검토 알람)\]\s*.*)$")
+
+
 def _lessons(out_dir: Path) -> list[str]:
-    """헤더 추출(extract_header_l1)이 notes.json에 남긴 LESSON."""
-    f = Path(out_dir) / "spec" / "l1_extract" / "notes.json"
-    return json.loads(f.read_text(encoding="utf-8")).get("lessons", []) if f.exists() else []
+    """헤더 추출(extract_header_l1)이 notes.json에 남긴 LESSON과, SPEC 작성자가 10절에 남긴 `[LESSON]`·`[SPEC 재검토 알람]` 줄.
+    notes의 LESSON은 SPEC에 `[LESSON]`으로 복사되므로 같은 문장은 하나로 합친다."""
+    out_dir = Path(out_dir)
+    f = out_dir / "spec" / "l1_extract" / "notes.json"
+    found: list[str] = json.loads(f.read_text(encoding="utf-8")).get("lessons", []) if f.exists() else []
+    spec = out_dir / "spec" / "spec.md"
+    if spec.exists():
+        in_q = False
+        for line in spec.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("## "):
+                in_q = line.startswith("## 10")
+            elif in_q and (m := SPEC_ALARM_RE.match(line.strip())):
+                text = m.group(1).strip()
+                plain = re.sub(r"^\[LESSON\]\s*", "", text)
+                if plain not in found and text not in found:
+                    found.append(text)
+    return list(dict.fromkeys(found))
 
 
 def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Path, roles: roles_mod.Roles,

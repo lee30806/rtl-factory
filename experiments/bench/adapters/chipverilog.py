@@ -90,6 +90,36 @@ def dedupe_modules(text: str) -> tuple[str, list[str]]:
     return MODULE_BLOCK_RE.sub(keep, text), dropped
 
 
+_CHECK_RE = re.compile(r"^\s*\d+\s*ps\s+(Answer is correct|Error! \S+ is incorrect)\s+([0-9a-fA-Fxz]+)", re.M)
+_EXPECT_RE = re.compile(r"==\s*\d+'h([0-9a-fA-F_]+)")
+
+
+def diagnose_sim(sim_log: str, tb_text: str = "") -> str:
+    """자체 검사 TB의 출력("Answer is correct / Error! out is incorrect <값>")에서 Repair가 쓸 한 줄 진단을 만든다.
+    값만 틀렸는지, 모든 검사 시점에 같은 값이 나오는지(파이프라인 깊이·enable 처리 의심), 기대값이 몇 검사 간격 어긋나 나오는지를 본다.
+    TB 원문이 있으면 `== 64'h...` 기대값 목록과 대조한다. 형식이 맞지 않으면 빈 문자열."""
+    checks = _CHECK_RE.findall(sim_log)
+    if not checks:
+        return ""
+    actual = [v.lower().replace("_", "") for _, v in checks]
+    n_ok = sum(1 for k, _ in checks if k.startswith("Answer"))
+    parts = [f"자체 검사 {len(checks)}개 중 {n_ok}개 일치"]
+    if len(actual) > 1 and len(set(actual)) == 1:
+        parts.append("모든 검사 시점에 출력이 같은 값이다: 연속 입력이 순서대로 나오지 않으므로 파이프라인 깊이(지연)나 enable 처리를 먼저 의심할 것")
+    expected = [v.lower().replace("_", "") for v in _EXPECT_RE.findall(tb_text)] if tb_text else []
+    if expected and len(expected) == len(actual) and n_ok < len(actual):
+        best_k, best_hits = 0, 0
+        for k in range(-(len(actual) - 1), len(actual)):
+            hits = sum(1 for i, a in enumerate(actual) if 0 <= i - k < len(expected) and a == expected[i - k])
+            if hits > best_hits:
+                best_k, best_hits = k, hits
+        if best_k and best_hits >= 2:
+            # k>0: 검사 i에 기대값 i-k가 보임 = 출력이 늦음 = 후보 지연이 정답보다 길다
+            parts.append(f"기대값 순서가 {abs(best_k)} 검사 간격 {'늦게' if best_k > 0 else '빠르게'} 나온다 ({best_hits}개 일치): "
+                         f"지연이 정답보다 {'길다' if best_k > 0 else '짧다'}")
+    return ". ".join(parts) + "."
+
+
 def _verify(text: str, name: str, root: Path, timeout: int) -> tuple[dict | None, Path, str]:
     cdir = root / "result_root" / "rtlf" / name
     cdir.mkdir(parents=True, exist_ok=True)
@@ -121,9 +151,15 @@ def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int
             if m.group(1) not in unproven:
                 unproven.append(m.group(1))
     stage = {"compile_fail": "compile"}.get(r.get("status"), "sim")
+    # 자체 검사 TB 실패면 값 목록만으로는 Repair가 지연 문제를 보지 못한다. 출력 패턴을 읽어 한 줄 진단을 앞에 붙인다
+    diag = ""
+    if not ok and (sl := adir / "sim.log").exists():
+        tbs = sorted(p for p in des.glob("*.v") if re.search(r"tb|test", p.name, re.I))
+        diag = diagnose_sim(sl.read_text(errors="replace"), tbs[0].read_text(errors="replace") if tbs else "")
     return {"ok": ok, "kind": "chipverilog", "status": r.get("status"), "flow": r.get("flow"), "proof_type": r.get("proof_type"),
-            "stage": stage, "unproven_outputs": unproven, "deduped_modules": dropped,
-            "log_tail": "" if ok else (f'{r.get("status")}: ' + (f"정답과 등가가 증명되지 않은 출력 {unproven[:20]} (사이클 단위 비교). " if unproven else "")
+            "stage": stage, "unproven_outputs": unproven, "deduped_modules": dropped, "diagnosis": diag,
+            "log_tail": "" if ok else (f'{r.get("status")}: ' + (diag + " " if diag else "")
+                                       + (f"정답과 등가가 증명되지 않은 출력 {unproven[:20]} (사이클 단위 비교). " if unproven else "")
                                        + f'{r.get("reason", "")} {r.get("counterexample_summary", "")}')[:1500]}
 
 

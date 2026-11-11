@@ -164,7 +164,7 @@ def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
             f"| {'PASS' if c1_ok else ('-' if 'c1' not in r.candidates else 'FAIL')} | {_ext_cell(r)} | {cells} | {loops} | {r.agent_runs} |"
         )
     if with_lessons := [r for r in results if r.lessons]:
-        lines += ["", "## LESSON (사람이 확인할 헤더·리셋 판정 결함)", ""]
+        lines += ["", "## LESSON·재검토 알람 (사람이 확인할 헤더·리셋·파라미터 판정과 SPEC 작성자의 가정)", ""]
         lines += [f"- `{r.id}`: {x}" for r in with_lessons for x in r.lessons]
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return summary

@@ -226,8 +226,12 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
         if timed_out.is_set():
             running = re.findall(r"running \S+?\.(\S+) \(", logs[-1])
             last = running[-1] if running else None
+            # 시뮬레이션 시각이 0에서 멈춰 있으면 RTL이 느린 것이 아니라 수렴하지 않는 조합 경로(루프)일 가능성이 크다
+            stamps = [float(x) for x in re.findall(r"^\s*(\d+\.\d+)ns\s", logs[-1], re.M)]
+            hint = (" 시뮬레이션 시각이 0ns에서 진행하지 않음: 조합 루프나 수렴하지 않는 always_comb를 먼저 의심할 것."
+                    if stamps and max(stamps) == 0.0 else "")
             per_seed[s] = [Finding("cocotb", "SIM_TIMEOUT", None, None,
-                                   f"{timeout_s:.0f}초 안에 끝나지 않아 중단 (마지막 테스트 {last}, seed {tag})", test=last)]
+                                   f"{timeout_s:.0f}초 안에 끝나지 않아 중단 (마지막 테스트 {last}, seed {tag}).{hint}", test=last)]
             continue
         if not results.exists():
             per_seed[s] = [Finding("cocotb", "NO_RESULTS", None, None, f"결과 파일이 없음 (시뮬레이터 비정상 종료, seed {tag})")]

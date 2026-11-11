@@ -762,3 +762,57 @@ def test_dedupe_modules_keeps_first_definition():
     from experiments.bench.adapters.chipverilog import dedupe_modules
     text, dropped = dedupe_modules("module m(input a);\nendmodule\nmodule top(input a);\n  m u(.a(a));\nendmodule\nmodule m (input a);\n  wire x;\nendmodule\n")
     assert dropped == ["m"] and text.count("module m") == 1 and "module top" in text
+
+
+def test_reset_sync_phrase_variants_are_explicit():
+    """"rst (Active-High, Synchronous to `clk`)" 같은 어순도 동기 명시다 (ChipVerilog 추가 프롬프트). 거짓 '기본값' LESSON을 내지 않는다."""
+    from experiments.bench.common.to_spec import infer_reset_and_clock_traits as traits
+    lessons: list[str] = []
+    assert traits("- **Reset Signal**: `rst` (Active-High (1 to reset), Synchronous to `clk`).", "clk", "rst", top="fpu_mul", lessons=lessons) == ("pos", "high", False)
+    assert lessons == []
+    assert traits("The reset is synchronized to the clock.", "clk", "rst_n", lessons=lessons)[2] is False
+    assert lessons == []
+
+
+def test_prompt_param_conflicts_and_stage_depth():
+    """헤더 DEPTH=16 대 본문 "depth 8"은 충돌 LESSON (asyn_fifo). 고정 지연 설계의 단 번호 레지스터 sign_1~sign_20은 깊이 20 힌트 (fpu_mul_pipeline)."""
+    from experiments.bench.common.to_spec import prompt_param_conflicts, prompt_stage_depth
+    params = [{"name": "DEPTH", "default": 16}, {"name": "WIDTH", "default": 8}]
+    out = prompt_param_conflicts("parameter DEPTH = 16, WIDTH = 8. Use 4-bit Gray code as pointer for a FIFO with depth 8.", params)
+    assert len(out) == 1 and "DEPTH=16" in out[0] and " 8" in out[0]
+    assert prompt_param_conflicts("depth is configurable (DEPTH = 16).", params) == []
+    assert prompt_stage_depth("A fixed-latency pipeline. reg sign_1: Stage-1 copy. reg sign_2. reg sign_20: Stage-20 copy. reg rm_1, rm_2, rm_15.") == (20, "prompt.txt의 단 번호 레지스터 sign_1 ~ sign_20")
+    assert prompt_stage_depth("A 3-stage pipeline multiplier.")[0] == 3
+    assert prompt_stage_depth("Combinational adder with a_1 and a_2 inputs.") == (None, None)
+
+
+def test_header_l1_records_param_conflict_and_depth_hint(tmp_path: Path):
+    item = BenchItem(benchmark="rtllm", id="t", category="sequential", top="t",
+                     header_sv="module t #(parameter int DEPTH = 16) (input clk, input rst_n, input a, output reg y);\nendmodule\n",
+                     prompt_text="Synchronous reset when rst_n is low. A fixed-latency pipeline with depth 8 (DEPTH 8): regs s_1, s_2, s_3 and s_4.",
+                     reference_rtl=[])
+    _, _, notes = extract_header_l1(item, tmp_path / "l1")
+    assert len(notes["param_conflicts"]) == 1 and notes["stage_depth_hint"] == 4
+    assert any("파라미터 충돌" in x for x in notes["lessons"]) and any("지연 추정" in x for x in notes["lessons"])
+
+
+def test_lessons_collect_spec_alarms(tmp_path: Path):
+    """결과 lessons는 notes.json의 LESSON과 SPEC 10절의 [LESSON]·[SPEC 재검토 알람] 줄을 합치고 같은 문장은 하나로 둔다."""
+    from experiments.bench.common.runner import _lessons
+    (tmp_path / "spec" / "l1_extract").mkdir(parents=True)
+    (tmp_path / "spec" / "l1_extract" / "notes.json").write_text(json.dumps({"lessons": ["리셋 판정 기본값: x"]}), encoding="utf-8")
+    (tmp_path / "spec" / "spec.md").write_text("# t SPEC\n\n## 9. 구현 제약\n- Q-00 [LESSON] 9절 줄은 무시\n\n## 10. 열린 질문\n\n- Q-01 [LESSON] 리셋 판정 기본값: x\n"
+                                               "- Q-02 [SPEC 재검토 알람] DEPTH=16과 깊이 8이 어긋남\n- Q-03 일반 질문은 넣지 않음\n", encoding="utf-8")
+    assert _lessons(tmp_path) == ["리셋 판정 기본값: x", "[SPEC 재검토 알람] DEPTH=16과 깊이 8이 어긋남"]
+
+
+def test_chipverilog_diagnose_sim():
+    from experiments.bench.adapters.chipverilog import diagnose_sim
+    log = "\n".join(f"   {220 + 10 * i}000ps Error! out is incorrect aaaa" for i in range(3)) + "\n   250000ps Answer is correct aaaa\n"
+    d = diagnose_sim(log)
+    assert "4개 중 1개 일치" in d and "같은 값" in d
+    tb = "if (outfp==64'h1111) ...\nif (outfp==64'h2222)\nif (outfp==64'h3333)\nif (outfp==64'h4444)\n"
+    lag = "   1ps Error! out is incorrect 0000\n   2ps Error! out is incorrect 1111\n   3ps Error! out is incorrect 2222\n   4ps Error! out is incorrect 3333\n"
+    d = diagnose_sim(lag, tb)
+    assert "1 검사 간격 늦게" in d and "길다" in d
+    assert diagnose_sim("no checks here") == ""
