@@ -160,6 +160,43 @@ def check_impl_kind(spec: Spec, ir: dict | None) -> list[SpecIssue]:
                       "`- 구현 종류: 합성`(상수 출력)을 밝힌다")]
 
 
+_SYNC_RST = re.compile(r"(?<!비)동기\s*리셋")
+_ASYNC_RST = re.compile(r"비동기\s*리셋")
+_FORBID = re.compile(r"금지|쓰지\s*않|사용하지\s*않|허용하지\s*않|쓸\s*수\s*없")
+_REQUIRE = re.compile(r"(?:으|로)\s*구현|(?:만|을|를)\s*(?:쓴다|사용|쓰|써)|이다\b|으로\s*(?:동작|처리|한다)|을\s*둔다")
+
+
+def _reset_sync_conflicts(spec: Spec, rdoms: list[dict], f: str) -> list[SpecIssue]:
+    """2절 표(L1)의 리셋 동기/비동기와 5~9절 문장이 어긋나면 오류. Architect는 표를, Repair는 9절을 따르다 충돌한다
+    (ChipVerilog register_file: 표는 비동기, 9절은 "동기 리셋으로 구현, 비동기 리셋 사용 금지")."""
+    out = []
+    lines: list[tuple[int, str, bool]] = []   # (줄, 글, 금지 항목 아래인가)
+    for n in (5, 6, 7, 8, 9):
+        forbid_ctx = False
+        for ln, text in getattr(spec.sections.get(n), "lines", []):
+            if text.lstrip().startswith("#"):
+                forbid_ctx = "금지" in text
+                continue
+            lines.append((ln, text, forbid_ctx))
+    for d in rdoms:
+        is_async, port = bool(d["reset"].get("async")), d["reset"]["port"]
+        for ln, text, forbid_ctx in lines:
+            forbids = forbid_ctx or bool(_FORBID.search(text))
+            if is_async and ((_ASYNC_RST.search(text) and forbids) or
+                             (_SYNC_RST.search(text) and not forbids and _REQUIRE.search(text))):
+                out.append(SpecIssue("RESET_SYNC_CONFLICT", "error", f"{f}:{ln}",
+                                     f"2절 표는 {port}를 비동기 리셋으로 두는데 이 문장은 동기 리셋을 요구하거나 비동기 리셋을 금지함. "
+                                     "2절 표(L1)와 문장을 한쪽으로 맞춘다"))
+                break
+            if not is_async and ((_SYNC_RST.search(text) and forbids) or
+                                 (_ASYNC_RST.search(text) and not forbids and _REQUIRE.search(text))):
+                out.append(SpecIssue("RESET_SYNC_CONFLICT", "error", f"{f}:{ln}",
+                                     f"2절 표는 {port}를 동기 리셋으로 두는데 이 문장은 비동기 리셋을 요구하거나 동기 리셋을 금지함. "
+                                     "2절 표(L1)와 문장을 한쪽으로 맞춘다"))
+                break
+    return out
+
+
 def check_resets(spec: Spec, ir: dict | None) -> list[SpecIssue]:
     if ir is None:
         return []
@@ -187,6 +224,7 @@ def check_resets(spec: Spec, ir: dict | None) -> list[SpecIssue]:
             out.append(SpecIssue("INIT_NO_RESET", "error", f"{f}:{r.line}",
                                  f"{r.id}: 리셋이 없는 도메인의 출력({', '.join(hit)})에 초기값을 정함. 리셋 없이는 초기값을 "
                                  "보장할 수 없으므로(initial 문 금지) 리셋을 두거나, 첫 값이 정해지기 전 출력을 '미정의'로 쓴다"))
+    out += _reset_sync_conflicts(spec, rdoms, f)
     clocks = {d["clock"] for d in rdoms}
     ports = sorted({d["reset"]["port"] for d in rdoms})
     if len(clocks) > 1 and len(ports) > 1 and not any(

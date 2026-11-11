@@ -66,6 +66,9 @@ async def pyequiv(dut):
         getattr(dut, n).value = 1 - act
     mismatch = None
     t0, now, cyc = 0, 0, {r: 0 for r in groups}
+    # 처음부터 걸린 비동기 리셋은 2-state RTL에서 에지가 없어 첫 클럭 전까지 레지스터가 초기값(0)이다. 설계 모델은 리셋값을
+    # 바로 가지므로, 모든 클럭 포트가 첫 상승 에지를 지난 뒤부터 비교한다 (RTLLM asyn_fifo rempty 리셋값 1)
+    seen_up: set[str] = set()
     for phase in cfg["phases"]:
         half = {p: 2 * phase[root] * div for p, (root, div, _, _) in ports.items()}   # ns
         fast = min(phase[r] for r in groups)
@@ -93,6 +96,7 @@ async def pyequiv(dut):
                 getattr(dut, p).value = 0
             for p in up:
                 getattr(dut, p).value = 1
+            seen_up |= up
             if drive:
                 vals = {}
                 for n, w in ins.items():
@@ -114,7 +118,7 @@ async def pyequiv(dut):
             if active:
                 sim.step(active)
             await ReadOnly()
-            for o in outs:
+            for o in outs if seen_up >= set(ports) else []:
                 got = int(getattr(dut, o).value)
                 if got != sim.val[o]:
                     mismatch = {"time_ns": t, "phase": phase, "output": o, "rtl": got, "py": sim.val[o],

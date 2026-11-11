@@ -395,3 +395,16 @@ def test_spec_l1_with_inout_passes_gate_without_tristate_block():
     from pipeline.spec.check import check_l1
     ir, issues = check_l1(parse(text))
     assert ir is not None and not [i for i in issues if i.severity == "error"], [i.message for i in issues]
+
+
+def test_reset_sync_conflict_between_table_and_text():
+    """2절 표의 리셋 동기 여부와 5~9절 문장이 어긋나면 오류 (ChipVerilog register_file: 표는 비동기, 9절은 동기 구현·비동기 금지)."""
+    text = (ROOT / "tests" / "golden" / "axis_cobs_decode" / "block_spec.md").read_text()   # 2절: 동기 리셋
+    codes = lambda t: [i["code"] for i in check_run(parse(t))["issues"] if i["code"] == "RESET_SYNC_CONFLICT"]  # noqa: E731
+    assert codes(text) == []
+    ok = text.replace("## 10.", "### 금지 사항\n- 비동기 리셋 사용 (rst는 clk에 동기해서만 쓴다)\n\n## 10.", 1)
+    assert codes(ok) == []   # 표와 같은 방향
+    bad = text.replace("### 금지 사항", "- 리셋은 비동기 리셋으로 구현한다.\n\n### 금지 사항", 1)
+    assert codes(bad) == ["RESET_SYNC_CONFLICT"]
+    bad2 = text.replace("## 10.", "### 금지 사항\n- 동기 리셋 사용\n\n## 10.", 1)
+    assert codes(bad2) == ["RESET_SYNC_CONFLICT"]

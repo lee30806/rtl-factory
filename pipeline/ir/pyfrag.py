@@ -271,6 +271,22 @@ class Widths:
     depth: dict[str, int] = field(default_factory=dict)     # 메모리 이름 → 깊이
     fns: dict[str, dict] = field(default_factory=dict)      # function/task 이름 → {"kind", "ret", "args": [(이름, 방향, 폭)], "vars"}
     ret: SymW | None = None                                  # function 본문을 옮길 때 반환 폭
+    rng: dict[str, tuple[int, int]] = field(default_factory=dict)   # 이름 → 선언 범위 [L:R]의 값 (1비트는 (0, 0))
+
+    def type_range(self, t: str) -> tuple[int, int]:
+        """선언 범위 [L:R]의 값. `logic [32:1]`은 (32, 1), 1비트·int·enum은 (폭-1, 0)."""
+        t = t.strip()
+        m = _TYPE.fullmatch(t)
+        if m and m.group(1) is not None:
+            return tuple(const_int(_const_expr(x), self.consts) for x in (m.group(1), m.group(2)))
+        return (w_val(self.type_sym(t), self.consts) - 1, 0)
+
+    def bit_pos(self, name: str, i: int) -> int:
+        """선언 범위 안의 비트 번호 i → 값에서의 자리 (LSB가 0). [L:R] 내림차순이면 i-R, 오름차순([0:15])이면 R-i."""
+        lo_, hi_ = self.rng.get(name, (None, None))
+        if lo_ is None:
+            return i
+        return i - hi_ if lo_ >= hi_ else hi_ - i
 
     def type_sym(self, t: str) -> SymW:
         t = t.strip()
@@ -303,13 +319,13 @@ class Widths:
             w.params.add(p["name"])
         for p in raw.get("ports", []):
             for s in p.get("signals", [p]):
-                w.sym[s["name"]] = w.type_sym(s["type"])
+                w.sym[s["name"]], w.rng[s["name"]] = w.type_sym(s["type"]), w.type_range(s["type"])
         for d in raw.get("domains", []):   # 리셋 포트 (comb 조각이 읽을 수 있음)
             r = d.get("reset")
             for x in ([r, *r.get("extra", [])] if r else []):
                 w.sym[x["port"]] = ONE
         for s in raw.get("signals", []):
-            w.sym[s["name"]] = w.type_sym(s["type"])
+            w.sym[s["name"]], w.rng[s["name"]] = w.type_sym(s["type"]), w.type_range(s["type"])
         for b in raw.get("blocks", []):
             if b.get("kind") == "fsm":
                 w.sym[f'{b["state_name"]}_q'] = w_const(w.enums.get(b["state_type"], 32))
@@ -321,7 +337,8 @@ class Widths:
                 raise FragError(f'function 이름 {f["name"]}가 도움 함수와 겹침')
             w.fns[f["name"]] = {"kind": f["kind"], "ret": w.type_sym(f["ret"]) if f.get("ret") else None,
                                 "args": [(a["name"], a["dir"], w.type_sym(a["type"])) for a in f["args"]],
-                                "vars": [(v["name"], w.type_sym(v["type"])) for v in f.get("vars", [])]}
+                                "vars": [(v["name"], w.type_sym(v["type"])) for v in f.get("vars", [])],
+                                "rng": {x["name"]: w.type_range(x["type"]) for x in [*f["args"], *f.get("vars", [])]}}
         w.width = {n: w_val(s, w.consts) for n, s in w.sym.items()}
         return w
 
@@ -330,7 +347,8 @@ class Widths:
         f = self.fns[name]
         names = list(self.fns)
         w = Widths(sym={n: s for n, _, s in f["args"]} | dict(f["vars"]), consts=self.consts, const_sym=self.const_sym,
-                   enums=self.enums, params=self.params, fns={k: self.fns[k] for k in names[:names.index(name)]}, ret=f["ret"])
+                   enums=self.enums, params=self.params, fns={k: self.fns[k] for k in names[:names.index(name)]}, ret=f["ret"],
+                   rng=dict(f.get("rng", {})))
         w.width = {n: w_val(s, w.consts) for n, s in w.sym.items()}
         return w
 
@@ -508,6 +526,21 @@ class _Tr:
             return f"({self.bound(n.left)} {_BIN[type(n.op)]} {self.bound(n.right)})"
         raise FragError("범위의 끝은 상수식 (+ - * 만)", getattr(n, "lineno", None))
 
+    def _check_range(self, base: str, hi: ast.expr, lo: ast.expr, ln: int) -> None:
+        """상수 비트 선택이 선언 범위 [L:R]를 벗어나면 오류. 그대로 방출하면 설계 모델(0)과 RTL이 달라져 생성기 버그로
+        잘못 분류된다 (RTLLM adder_pipe_64bit: 32비트 신호에 [63:48])."""
+        if base not in self.wd.rng:
+            return
+        try:
+            h, l = self.wd.const(hi, {}), self.wd.const(lo, {})
+        except Exception:
+            return   # 반복 변수 등 상수가 아니면 검사하지 않음
+        L, R = self.wd.rng[base]
+        lo_b, hi_b = min(L, R), max(L, R)
+        if not (lo_b <= h <= hi_b and lo_b <= l <= hi_b):
+            sel = f"[{h}]" if h == l else f"[{h}:{l}]"
+            raise FragError(f"{base}{sel}: 선언 범위 [{L}:{R}]를 벗어난 비트 선택", ln)
+
     def subscript(self, n: ast.Subscript, target: bool = False) -> str:
         ln = n.lineno
         if isinstance(n.value, ast.Subscript) and isinstance(n.value.value, ast.Name) and n.value.value.id in self.wd.mems:
@@ -530,8 +563,11 @@ class _Tr:
                 raise FragError("범위 선택은 x[hi:lo] (양 끝 포함, 상수)", ln)
             if self.loops and ({x.id for x in ast.walk(s) if isinstance(x, ast.Name)} & set(self.loops)):
                 raise FragError("범위 선택의 끝에 반복 변수를 쓸 수 없음 (비트 하나씩 x[i]로)", ln)
+            self._check_range(base, s.lower, s.upper, ln)
             return f"{base}[{self.bound(s.lower)}:{self.bound(s.upper)}]"
         idx = n.slice
+        if isinstance(idx, ast.Constant) and isinstance(idx.value, int):
+            self._check_range(base, idx, idx, ln)
         if isinstance(idx, ast.Constant) and isinstance(idx.value, int):
             return f"{base}[{idx.value}]"
         return f"{base}[{self.expr(idx, operand_sym(self.sw(idx)))}]"

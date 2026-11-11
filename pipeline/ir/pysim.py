@@ -136,6 +136,12 @@ class _Scope:
     def _ci(self, n: ast.expr, env: dict[str, int]) -> int:
         return self.wd.const(n, env)
 
+    def _bits(self, name: str, hi: int, lo: int) -> tuple[int, int]:
+        """비트 선택 [hi:lo] → (값에서의 자리, 폭). 선언이 `[32:1]`이면 [16:1]은 자리 0부터 16비트 (SV와 같음).
+        선언 범위를 모르면(function 인자 등) LSB 0으로 본다."""
+        a, b = self.wd.bit_pos(name, hi), self.wd.bit_pos(name, lo)
+        return min(a, b), abs(a - b) + 1
+
     def wid(self, n: str) -> int:
         """신호 폭. 메모리 워드(`mem[3]`)는 워드 폭."""
         return self.width[n] if n in self.width else w_val(self.wd.mems[n.split("[")[0]], self.consts)
@@ -195,10 +201,10 @@ class _Scope:
                 return self.sim.val.get(self.prefix + k, 0) & m if k else 0
             base = self._get(n.value.id, env)
             if isinstance(n.slice, ast.Slice):
-                hi, lo = self._ci(n.slice.lower, env), self._ci(n.slice.upper, env)
-                return (base >> lo) & mask(hi - lo + 1) & m
+                sh, w = self._bits(n.value.id, self._ci(n.slice.lower, env), self._ci(n.slice.upper, env))
+                return (base >> sh) & mask(w) & m
             i = self.ev(n.slice, env, operand_w(self._w(n.slice, env)))
-            return (base >> i) & 1 & m
+            return (base >> self.wd.bit_pos(n.value.id, i)) & 1 & m
         if isinstance(n, ast.Call):
             f, a = n.func.id, n.args
             if f in self.fns:
@@ -293,9 +299,9 @@ class _Scope:
             hi, lo = self._ci(t.slice.lower, env), self._ci(t.slice.upper, env)
         else:
             hi = lo = self.ev(t.slice, env, operand_w(self._w(t.slice, env)))
-        w = hi - lo + 1
+        sh, w = self._bits(name, hi, lo)
         v = self.ev(val, env, max(w, self._w(val, env))) & mask(w)
-        write(name, lambda old: (old & ~(mask(w) << lo)) | (v << lo))
+        write(name, lambda old: (old & ~(mask(w) << sh)) | (v << sh))
 
     def comb(self) -> None:
         val = self.sim.val

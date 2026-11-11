@@ -142,6 +142,7 @@ def run_pipeline_unattended(
     max_arch_revisions: int = 1,
     max_modules: int | None = None,
     external_tb: Any = None,
+    incdirs: list[Path] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Run.execute()를 실행하고 waiting_approval 발생 시 auto_decide로 자동 결정하며 수렴할 때까지 반복한다."""
     run_dir = Path(run_dir).resolve()
@@ -149,7 +150,8 @@ def run_pipeline_unattended(
     auto_history: list[dict[str, Any]] = []
 
     while True:
-        runner = Run(run_dir, spec_path, roles, cells=cells, isolate=isolate, max_modules=max_modules, external_tb=external_tb)
+        runner = Run(run_dir, spec_path, roles, cells=cells, isolate=isolate, max_modules=max_modules, external_tb=external_tb,
+                     incdirs=incdirs)
         rep = runner.execute()
         if rep["status"] != "waiting_approval" or not auto_approve:
             return rep, auto_history
@@ -595,6 +597,7 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
         max_arch_revisions=max_arch_revisions,
         max_modules=max_modules,
         external_tb=ext_tb_fn,
+        incdirs=[Path(d) for d in item.incdirs],
     )
 
     langs = list(roles.author_langs) if getattr(roles, "author_langs", None) else ["sv"]

@@ -37,7 +37,7 @@ def phases(top: Module, n: int = PHASES) -> list[dict[str, int]]:
 
 
 def check(top: str, library: dict[str, Module], files: list[Path], build_dir: Path, cycles: int = CYCLES,
-          seed: int = 1) -> dict:
+          seed: int = 1, build_args: list[str] | None = None) -> dict:
     """{"ok", "skipped"?, "mismatch"?, "error"?}. 실행기가 모르는 구성이면 건너뛴다 (skipped에 이유)."""
     if (why := supported(library[top], library)) is not None:
         return {"ok": True, "skipped": why}
@@ -51,7 +51,8 @@ def check(top: str, library: dict[str, Module], files: list[Path], build_dir: Pa
                                "cycles": max(1, cycles // len(ph)), "phases": ph, "seed": seed, "reset_cycles": RESET_CYCLES, "reset_prob": RESET_PROB, "out": str(out.resolve())},
                               ensure_ascii=False), encoding="utf-8")
     pads, sim_top = pad_top(library[top].raw, build_dir / "pad")   # inout top은 하니스와 같은 패드 래퍼를 top으로
-    r = sim([*map(Path, files), *pads], sim_top, "pyequiv_tb", TB_DIR, build_dir, env={"PYEQUIV_CFG": str(cfg.resolve())})
+    r = sim([*map(Path, files), *pads], sim_top, "pyequiv_tb", TB_DIR, build_dir, env={"PYEQUIV_CFG": str(cfg.resolve())},
+            build_args=build_args)
     if out.exists():
         return json.loads(out.read_text(encoding="utf-8"))
     return {"ok": False, "error": "; ".join(f.message[:300] for f in r.findings) or "결과 파일이 없음"}

@@ -66,14 +66,16 @@ class BudgetExceeded(RuntimeError):
 class Run:
     def __init__(self, run_dir: Path, spec: Path, roles: roles_mod.Roles, cells: list[Path] | None = None,
                  isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None,
-                 max_modules: int | None = None, external_tb=None):
+                 max_modules: int | None = None, external_tb=None, incdirs: list[Path] | None = None):
         """seed: 이전 실행에서 이어 가는 재실행(환류). {"parent": 실행 디렉터리, "kind": "external_repair" | "spec_change",
         "failures": {모듈: 분류된 외부 리포트 항목}, "old_spec": 이전 SPEC, "spec_diff": spec_diff.diff 결과}.
         max_modules: Architect의 하위 모듈 수 상한 (P11 R6 재생성). 상태에 남아 이어 가기에서도 같다.
+        incdirs: 셀 RTL이 `include하는 헤더 디렉터리. lint, 시뮬레이션, 번역기 검사의 Verilator 인자로 넘긴다 (ChipVerilog or1200 timescale.v).
         external_tb: 외부 테스트벤치 실행 콜백 `(sv_files, top, eval_dir) -> {"ok": bool, "stage": str, "log_tail": str}`. 지정 시 Verifier 에이전트를 생략한다."""
         self.dir, self.spec_path, self.roles = Path(run_dir).resolve(), Path(spec).resolve(), roles
         self.cells, self.isolate, self.seeds = cells if cells is not None else STUB_CELLS, isolate, seeds or [1]
         self.external_tb = external_tb
+        self.inc_args = [f"-I{Path(d).resolve()}" for d in (incdirs or [])]
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "modules").mkdir(exist_ok=True)
         (self.dir / "tasks").mkdir(exist_ok=True)
@@ -582,13 +584,13 @@ class Run:
             files.append(rtl / f"{n}.sv")
             maps[n] = e.sourcemap
         roles = {n: m.role for n, m in mods.items()}
-        e1 = lint(files, top)
+        e1 = lint(files, top, extra_args=self.inc_args)
         e1c = classify_findings(e1.findings, maps, roles)
         # 조각의 lint 오류는 Repair가 먼저 고친다. 경고도 Verilator 빌드를 멈추므로 E2와 번역기 검사를 돌리면
         # 빌드 실패가 TB 실행 오류나 생성기 버그로 잘못 분류된다 (RTLLM multi_16bit WIDTHTRUNC)
         frag_lint = any(c.type == "lint_fragment" for c in e1c)
         # 번역기 검사: Python 조각 모듈의 설계 모델과 방출한 RTL이 같은 무작위 자극에서 같은 출력을 내는지 (SPEC 해석은 보지 않음)
-        py_equiv = [{"module": n, **pyequiv.check(n, mods, files, out / f"pyequiv_{n}")}
+        py_equiv = [{"module": n, **pyequiv.check(n, mods, files, out / f"pyequiv_{n}", build_args=self.inc_args)}
                     for n, m in mods.items() if m.lang == "py" and py_check and not frag_lint]
         top_m = mods[top]
         hdir, tdir = out / "harness", out / "verify_only"
@@ -614,7 +616,7 @@ class Run:
         else:
             for k, tb in enumerate([] if frag_lint else tbs):
                 r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
-                        trace=tdir / f"{top}_trace.json")
+                        trace=tdir / f"{top}_trace.json", build_args=self.inc_args)
                 res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
                 e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
                                                                    for f in r.findings], "out": str(res_dir)})
@@ -1058,7 +1060,7 @@ class Run:
         for mode, seed in DIFF_RUNS:
             for c in passed:
                 files, _ = emit_lib(self.group_lib(tree, mods, c), self.dir / "diffsim" / f"r{rnd}" / f"c{c}" / "rtl", self.cells)
-                recs[(c, mode, seed)] = run_diffsim(files, top, mode, seed, self.dir / "diffsim" / f"r{rnd}" / f"c{c}" / f"{mode}{seed}",
+                recs[(c, mode, seed)] = run_diffsim(files, top, mode, seed, self.dir / "diffsim" / f"r{rnd}" / f"c{c}" / f"{mode}{seed}", build_args=self.inc_args,
                                                     model=tbs[0], harness_dir=hdir)
             base = recs[(passed[0], mode, seed)]
             for c in passed[1:]:
@@ -1341,7 +1343,8 @@ def diff_cfg(top_ir: dict, mode: str, seed: int, model: str | None = None, harne
 
 
 def run_diffsim(files: list[Path], top_ir: dict, mode: str, seed: int, build_dir: Path, model: str | None = None,
-                harness_dir: Path | None = None, plan: dict | None = None, rebuild: bool = True) -> dict | None:
+                harness_dir: Path | None = None, plan: dict | None = None, rebuild: bool = True,
+                build_args: list[str] | None = None) -> dict | None:
     """후보 하나에 차분 자극을 넣고 출력 기록을 돌려준다. 시뮬레이션이 끝나지 않거나 실패하면 None.
     plan을 주면 그 자극 계획을 쓴다 (축소할 때). rebuild=False면 이미 만든 시뮬레이터를 다시 쓴다."""
     build_dir = Path(build_dir)
@@ -1353,7 +1356,7 @@ def run_diffsim(files: list[Path], top_ir: dict, mode: str, seed: int, build_dir
     pads, sim_top = pad_top(top_ir, build_dir / "pad")   # inout Block Top은 패드 래퍼를 top으로
     sim([*files, *pads], sim_top, "diffsim", ROOT / "pipeline" / "tb", build_dir,
         env={"DIFF_CFG": str((build_dir / "diff_cfg.json").resolve()), "DIFF_OUT": str(out.resolve())},
-        harness_dir=harness_dir, rebuild=rebuild, timeout_s=300)
+        harness_dir=harness_dir, rebuild=rebuild, timeout_s=300, build_args=build_args)
     return json.loads(out.read_text()) if out.exists() else None
 
 

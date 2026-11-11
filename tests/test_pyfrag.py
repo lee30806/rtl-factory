@@ -205,3 +205,44 @@ def test_clog2_in_types_is_read_symbolically():
     raw = {"module": "m", "role": "module", "lang": "py", "params": [{"name": "DEPTH", "type": "int", "default": "16"}],
            "domains": [], "ports": [], "signals": [{"name": "p", "kind": "wire", "type": "logic [$clog2(DEPTH):0]"}], "blocks": []}
     assert Module(raw).lower_errors == []
+
+
+def _mod(ports, body, signals=()):
+    return {"module": "t", "role": "module", "lang": "py", "params": [], "domains": [], "types": [], "signals": list(signals),
+            "ports": ports, "blocks": [{"id": "c", "kind": "comb", "lang": "py", "reads": [], "writes": [], "body": body}],
+            "functions": [], "assertions": []}
+
+
+def test_pysim_respects_declared_lsb():
+    """선언이 `[32:1]`이면 a[16:1]은 SV처럼 하위 16비트다. 실행기가 LSB를 0으로 보면 맞는 조각이 번역기 검사에서 떨어진다
+    (RTLLM adder_32bit cla16, op_split)."""
+    raw = _mod([{"name": "a", "dir": "input", "type": "logic [32:1]"}, {"name": "lo", "dir": "output", "type": "logic [16:1]"},
+                {"name": "b1", "dir": "output", "type": "logic"}, {"name": "asc", "dir": "input", "type": "logic [0:7]"},
+                {"name": "msb", "dir": "output", "type": "logic"}], "lo = a[16:1]\nb1 = a[1]\nmsb = asc[0]")
+    m = Module(raw)
+    assert "lo = a[16:1]" in emit(m, {"t": m}).text   # 방출은 그대로
+    sim = PySim(m)
+    sim.set({"a": 0xABCD1234, "asc": 0x80})
+    sim.settle()
+    assert sim.val["lo"] == 0x1234 and sim.val["b1"] == 0 and sim.val["msb"] == 1
+
+
+def test_pysim_slice_write_respects_declared_lsb():
+    raw = _mod([{"name": "a", "dir": "input", "type": "logic [8:1]"}, {"name": "y", "dir": "output", "type": "logic [16:1]"}],
+               "y = u(16, 0)\ny[8:1] = a\ny[16] = u(1, 1)")
+    sim = PySim(Module(raw))
+    sim.set({"a": 0x5A})
+    sim.settle()
+    assert sim.val["y"] == 0x805A
+
+
+def test_out_of_range_constant_select_is_frag_error():
+    """32비트 신호에 [63:48]: 그대로 방출하면 모델(0)과 RTL이 달라 생성기 버그로 잘못 분류된다 (RTLLM adder_pipe_64bit)."""
+    raw = _mod([{"name": "a", "dir": "input", "type": "logic [31:0]"}, {"name": "y", "dir": "output", "type": "logic [15:0]"}],
+               "y = a[63:48]")
+    wd = Widths.of(raw)
+    with pytest.raises(FragError, match="선언 범위"):
+        lower_body("y = a[63:48]", "comb", wd)
+    with pytest.raises(FragError, match=r"a\[32\]"):
+        lower_body("y = a[15:0]\ny[0] = a[32]", "comb", wd)
+    assert "선언 범위" in " ".join(i.message for i in validate(Module(raw)))   # V4 항목으로 Author에게 감
