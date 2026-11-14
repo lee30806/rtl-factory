@@ -145,3 +145,21 @@ def test_bench_spec_check_reports_coverage_once_and_undefined_always(tmp_path: P
     second = chk(tmp_path)
     assert any("PROMPT_COVERAGE" in e for e in first) and not any("PROMPT_COVERAGE" in e for e in second)
     assert any("UNDEFINED_OUTPUT" in e for e in first) and any("UNDEFINED_OUTPUT" in e for e in second)
+
+
+def test_every_spec_reader_gets_the_reading_guide():
+    """spec.md를 입력으로 받는 모든 역할 과제가 docs/SPEC 읽기 안내.md를 spec_guide.md로 함께 받는다."""
+    from pipeline.agents import arbiter, architect, author, repair, sim_model, verifier
+    from pipeline.agents.task import SPEC_GUIDE
+
+    assert SPEC_GUIDE.exists() and "## 10. 열린 질문" in SPEC_GUIDE.read_text(encoding="utf-8")
+    l1 = {"module": "m", "role": "block_top", "params": [], "domains": [], "ports": [{"name": "a", "dir": "input", "type": "logic"},
+                                                                                     {"name": "y", "dir": "output", "type": "logic"}]}
+    spec = Path("spec.md")
+    tasks = [author.make_task("a", l1, spec), architect.make_task("b", l1, spec), verifier.make_task("v", l1, spec),
+             repair.make_task("r", {"module": "m"}, spec, {}, []), arbiter.make_task("x", spec, {}, Path("t.py")),
+             arbiter.make_r6_task("x6", spec, {}) if hasattr(arbiter, "make_r6_task") else None,
+             sim_model.author_task("s", "m", spec, "{}"), sim_model.verifier_task("sv", "m", spec, "{}")]
+    for t in filter(None, tasks):
+        assert t.inputs.get("spec_guide.md") == SPEC_GUIDE, t.name
+        assert "spec_guide.md" in t.text, t.name

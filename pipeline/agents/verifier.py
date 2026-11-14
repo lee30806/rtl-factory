@@ -18,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pipeline.agents.task import ROOT, Task
+from pipeline.agents.task import ROOT, SPEC_GUIDE, Task
 from pipeline.ir.model import Module
 from pipeline.tb.gen import harness_config, harness_source
 
@@ -31,7 +31,9 @@ TASK = """\
 지키는지 판정할 참조 모델과 테스트를 쓴다.
 
 ## 입력
-- `spec.md`: SPEC. 5~7번 섹션의 요구사항, 8번 섹션의 예시 시나리오
+- `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다
+- `spec.md`: SPEC. 5~7번 섹션의 요구사항, 8번 섹션의 예시 시나리오. 10절 [LESSON]의 추정값도 (필수)로 확정된 계약이라 검사 대상이다.
+  `미정의:` 줄의 입력에는 기대값을 두지 않는다
 - `l1.json`: 동결된 L1 (포트, 번들, 도메인, 파라미터)
 - `harness/{module}_harness.py`: L1에서 생성한 하니스 (읽기만)
 - `tb_guide.md`: 테스트벤치 작성 안내. 먼저 읽는다
@@ -152,7 +154,7 @@ def _inout(l1: dict) -> str:
 
 def make_task(name: str, l1: dict, spec: str | Path) -> Task:
     module = l1["module"]
-    inputs = {"spec.md": Path(spec), "l1.json": json.dumps(l1, ensure_ascii=False, indent=1), "tb_guide.md": GUIDE,
+    inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "l1.json": json.dumps(l1, ensure_ascii=False, indent=1), "tb_guide.md": GUIDE,
               f"harness/{module}_harness.py": harness_source(Module(l1))}
     return Task("verifier", name, TASK.format(module=module, out=out_rel(module)) + _inout(l1), inputs=inputs,
                 outputs=[out_rel(module)], write_scope=["out/"])

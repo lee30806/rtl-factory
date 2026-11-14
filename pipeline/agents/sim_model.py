@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pyslang
 
-from pipeline.agents.task import Task
+from pipeline.agents.task import SPEC_GUIDE, Task
 from pipeline.importer.sources import Design, Inputs, SourceError
 
 PASS, FAIL = "TEST PASSED", "TEST FAILED"
@@ -25,6 +25,7 @@ AUTHOR_TASK = """\
 너는 RTL 생성 파이프라인의 Author 에이전트다. 이 설계는 합성하지 않는 시뮬레이션 모델이다. `spec.md`를 따라 동작 모델을 `{out}`에 쓴다.
 
 ## 입력
+- `spec_guide.md`: SPEC 읽기 안내. `spec.md`보다 먼저 읽는다
 - `spec.md`: SPEC. 5~7절의 동작과 9절의 구현 제약을 따른다
 - `l1.json`: 모듈 이름, 파라미터, 포트. 그대로 지킨다
 {repair}
@@ -46,6 +47,7 @@ VERIFIER_TASK = """\
 너는 RTL 생성 파이프라인의 Verifier 에이전트다. 설계의 구현을 보지 않고 `spec.md`만으로 자체 판정 테스트벤치를 `{out}`에 쓴다.
 
 ## 입력
+- `spec_guide.md`: SPEC 읽기 안내. `spec.md`보다 먼저 읽는다
 - `spec.md`: SPEC. 5~8절의 필수 요구사항을 검사한다
 - `l1.json`: 모듈 이름, 파라미터, 포트
 
@@ -68,7 +70,7 @@ def tb_rel(top: str) -> str:
 
 
 def author_task(name: str, top: str, spec: Path, l1_json: str, prev: Path | None = None, failures: str | None = None) -> Task:
-    inputs: dict = {"spec.md": Path(spec), "l1.json": l1_json}
+    inputs: dict = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "l1.json": l1_json}
     if prev is not None:
         inputs |= {"prev.sv": Path(prev), "failures.json": failures or "{}"}
     text = AUTHOR_TASK.format(top=top, out=model_rel(top), repair=REPAIR_NOTE if prev is not None else "")
@@ -77,7 +79,7 @@ def author_task(name: str, top: str, spec: Path, l1_json: str, prev: Path | None
 
 def verifier_task(name: str, top: str, spec: Path, l1_json: str) -> Task:
     text = VERIFIER_TASK.format(top=top, out=tb_rel(top), passed=PASS, failed=FAIL)
-    return Task("verifier", name, text, inputs={"spec.md": Path(spec), "l1.json": l1_json}, tools=False,
+    return Task("verifier", name, text, inputs={"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "l1.json": l1_json}, tools=False,
                 outputs=[tb_rel(top)], write_scope=["out/"])
 
 

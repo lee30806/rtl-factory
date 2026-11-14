@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pipeline.agents.task import ROOT, Task
+from pipeline.agents.task import ROOT, SPEC_GUIDE, Task
 from pipeline.ir.model import Module, frozen_l1
 from pipeline.validator.checks import errors, validate
 
@@ -30,18 +30,21 @@ TASK = """\
 
 ## 입력
 - `l1.json`: 동결된 L1 (module, role, params, domains, ports){children}
-- `spec.md`: SPEC. 이 모듈의 동작은 5~7번 섹션의 요구사항을 따른다. 9번 섹션의 구현 제약도 지킨다
+- `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력(계약·제약·근거·참조)이 적혀 있다. `spec.md`보다 먼저 읽는다
+- `spec.md`: SPEC. 5~7절과 9절이 계약, 1절과 부록이 문맥, 10절이 근거다. 10절의 [LESSON](추정값)과 [SPEC 재검토 알람](의도된 비표준
+  구조)을 먼저 확인해 어디가 추정이고 어디가 일부러 표준과 다른지 알고 나서 5~9절을 구현한다. 둘 다 바꾸지 않는다
 - `guide.md`: IR 작성 안내. 먼저 읽는다
 - `examples/`: 다른 모듈의 IR 예시 (형식 참고용)
 
 ## 할 일
-1. `guide.md`를 읽는다.
+1. `spec_guide.md`와 `guide.md`를 읽는다.
 2. L1을 그대로 포함하고 L2(types, signals, 출력 포트의 kind/reset)와 L3(blocks, 필요하면 functions와 assertions)를 채운 IR 전체를 `{out}`에 JSON으로 쓴다.
 3. `python3 tools/pl.py validate {out} --l1 l1.json{lib_arg}`가 `"ok": true`가 될 때까지 고친다.
 
 ## 규칙
 {lang_note}- `{out}` 외의 파일은 만들거나 고치지 않는다.
-- SPEC에 없는 동작을 지어내지 않는다. SPEC이 정하지 않은 세부는 단순한 쪽을 고른다.
+- SPEC에 없는 동작을 지어내지 않는다. SPEC이 정하지 않은 세부는 부록(원문 명세)이 정하면 그것을, 없으면 단순한 쪽을 고른다.
+- 5절 요구사항 줄 아래의 `| 조건 | 출력 |` 표는 그 요구사항의 일부다. 모든 행을 구현한다.
 - 비표준 동기화 지연이나 추가 파이프라인/포인터 레지스터 단 수라도 SPEC(5, 6, 9절)이 요구한 사항이면 표준 관행과 다르더라도 **반드시 SPEC이 요구한 레지스터 단 수와 지연 시점을 그대로 지킨다**.
 {contracts}"""
 
@@ -60,7 +63,7 @@ def make_task(name: str, l1: dict, spec: str | Path, children: dict[str, dict] |
     """contracts: 이 모듈이 한쪽 끝인 하위 모듈 사이 연결의 계약 (`architect.contracts_for`)."""
     module = l1["module"]
     inputs: dict = {"l1.json": json.dumps(l1, ensure_ascii=False, indent=1), "spec.md": Path(spec),
-                    "guide.md": GUIDE}
+                    "spec_guide.md": SPEC_GUIDE, "guide.md": GUIDE}
     for e in EXAMPLES:
         inputs[f"examples/{e.name}"] = e
     for e in PY_EXAMPLES if lang == "py" else []:

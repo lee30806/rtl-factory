@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from pipeline.agents.task import ROOT, Task
+from pipeline.agents.task import ROOT, SPEC_GUIDE, Task
 from pipeline.ir.model import Module, frozen_l1
 from pipeline.validator.checks import errors, validate
 
@@ -31,7 +31,8 @@ TASK = """\
 동작(L2, L3)은 쓰지 않는다. 그건 Author가 모듈마다 쓴다.
 
 ## 입력
-- `spec.md`: 고정된 SPEC
+- `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다
+- `spec.md`: 고정된 SPEC. 6절 지연과 9절 필수 구조를 하위 모듈 계약에 나누되 합을 바꾸지 않는다. 10절 [SPEC 재검토 알람]은 의도된 비표준 구조다
 - `block_top.json`: SPEC 2~4번 섹션 표에서 만든 Block Top의 L1 (바꾸지 않는다)
 - `guide.md`: IR 작성 안내 (role, 번들, 도메인, 연결 규칙)
 - `examples/`: Block Top(`pkt_rx_top`)과 하위 모듈(`pkt_parser`) IR 예시
@@ -109,7 +110,7 @@ def make_revise_task(name: str, block_top_l1: dict, spec: str | Path, tree: dict
 
 def make_task(name: str, block_top_l1: dict, spec: str | Path, max_modules: int | None = None) -> Task:
     """max_modules: 하위 모듈 수 상한 (P11 R6 재생성에서 원본 모듈 수로 정함). None이면 제한 없음."""
-    inputs = {"spec.md": Path(spec), "block_top.json": json.dumps(block_top_l1, ensure_ascii=False, indent=1),
+    inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "block_top.json": json.dumps(block_top_l1, ensure_ascii=False, indent=1),
               "guide.md": GUIDE, "examples/pkt_rx_top.ir.json": EXAMPLE_TOP, "examples/pkt_parser.ir.json": EXAMPLE_MOD}
     top = block_top_l1["module"]
     text = TASK.format(top=top, limit=LIMIT.format(n=max_modules) if max_modules else "")

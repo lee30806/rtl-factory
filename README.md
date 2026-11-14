@@ -13,6 +13,7 @@ SPEC에서 RTL을 생성하고, 검증된 원본 RTL에서 IR과 SPEC을 만드�
 | --- | --- |
 | [docs/LLM 기반 RTL 생성 파이프라인 설계.md](./docs/LLM%20기반%20RTL%20생성%20파이프라인%20설계.md) | SPEC 규격, 파이프라인, IR 스키마, Validator, 검증, 이식 |
 | [docs/SPEC 작성 템플릿.md](./docs/SPEC%20작성%20템플릿.md) | 입력 SPEC의 10개 절 |
+| [docs/SPEC 읽기 안내.md](./docs/SPEC%20읽기%20안내.md) | SPEC을 읽는 에이전트에게 절마다 목적과 구속력(계약·제약·근거·참조)을 알려 주는 안내. 모든 역할 과제에 `spec_guide.md`로 들어감 |
 | [docs/RTL 코딩 규칙.md](./docs/RTL%20코딩%20규칙.md) | 생성 RTL이 지키는 규칙과 강제하는 검사 |
 | [docs/용어집.md](./docs/용어집.md) | 문서와 코드에서 쓰는 말 |
 

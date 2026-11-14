@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pipeline.agents.task import ROOT, Task
+from pipeline.agents.task import ROOT, SPEC_GUIDE, Task
 from pipeline.ir.model import Module
 from pipeline.patch.apply import apply
 from pipeline.validator.checks import errors, validate
@@ -35,7 +35,9 @@ TASK = """\
   SPEC이 정한 동작은 테스트에 맞추려고 바꾸지 않는다. 실패가 SPEC이 정한 동작과 테스트 기대값의 차이에서 났으면 patch 대신
   `{out}`에 `[{{"op": "request_interface_change", "reason": "[SPEC-TB 불일치] ..."}}]`를 써서 SPEC 보정 단계로 넘긴다
 - `history.json`: 이전에 적용한 patch (같은 patch를 반복하지 않는다)
-- `spec.md`: SPEC. 무엇이 맞는 동작인지는 SPEC이 정한다
+- `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다
+- `spec.md`: SPEC. 무엇이 맞는 동작인지는 SPEC이 정한다. 실패 지점의 요구사항이 10절 [LESSON]의 추정값이면(원문이 말하지 않아
+  SpecWriter가 정한 값) IR을 TB에 맞춰 고치지 않고 `request_interface_change`(사유 `[SPEC-TB 불일치] ...`)로 SPEC 보정에 넘긴다
 - `guide.md`: IR 작성 안내. IR의 `lang`이 `py`면 body와 cond는 Python 조각이다 (안내의 "Python 조각" 절).
   실패 메시지에 "Python 조각 N번째 줄"이 있으면 그 조각의 N번째 줄이 방출된 RTL의 오류 위치다
 
@@ -80,7 +82,7 @@ def make_task(name: str, ir: dict, spec: str | Path, failure: dict, history: lis
               lead: dict | None = None) -> Task:
     """block: 하위 모듈이 여럿일 때 {"top": 이름, "instances", "connections", "siblings": {이름: L1}, "contracts": [...]}.
     lead: lead가 이 모듈을 고칠 곳으로 지정한 결정 {"id", "note", "chain", "claims"}."""
-    inputs = {"ir.json": json.dumps(ir, ensure_ascii=False, indent=1), "spec.md": Path(spec), "guide.md": GUIDE,
+    inputs = {"ir.json": json.dumps(ir, ensure_ascii=False, indent=1), "spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "guide.md": GUIDE,
               "failure.json": json.dumps(failure, ensure_ascii=False, indent=1),
               "history.json": json.dumps(history, ensure_ascii=False, indent=1)}
     extra = ""

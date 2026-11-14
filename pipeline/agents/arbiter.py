@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pipeline.agents.task import Task
+from pipeline.agents.task import SPEC_GUIDE, Task
 from pipeline.spec.parse import load
 
 VERDICTS = {"rtl_wrong", "test_wrong", "spec_ambiguous"}
@@ -24,7 +24,8 @@ TASK = """\
 SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 없다. 판정 기준은 SPEC뿐이다.
 
 ## 입력
-- `spec.md`: SPEC
+- `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다
+- `spec.md`: SPEC. 근거로 든 문장이 10절 [LESSON]의 추정값이면 판정에 "추정값"임을 적는다
 - `mismatch.json`: 불일치 리포트. `first_failure`의 expected는 참조 모델의 기댓값, got은 RTL의 실제값이다.
   `fsm_trace`, `fanin.values`는 그 시점 전후의 내부 값, `spec.clauses`는 관련 요구사항이다
 - `test.py`: 참조 모델과 테스트 시나리오 (기댓값이 어떻게 만들어졌는지)
@@ -52,7 +53,7 @@ SPEC 구절을 근거로 판정하고 `{out}`에 아래 JSON을 쓴다.
 
 
 def make_task(name: str, spec: str | Path, mismatch: dict, test_file: Path) -> Task:
-    inputs = {"spec.md": Path(spec), "mismatch.json": json.dumps(mismatch, ensure_ascii=False, indent=1), "test.py": test_file}
+    inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "mismatch.json": json.dumps(mismatch, ensure_ascii=False, indent=1), "test.py": test_file}
     return Task("arbiter", name, TASK.format(out=OUT), inputs=inputs, tools=False, outputs=[OUT])
 
 
@@ -90,7 +91,8 @@ R6_TASK = """\
 원본은 기준이다 (원본 동작이 곧 의도한 동작).
 
 ## 입력
-- `spec.md`: SPEC
+- `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다
+- `spec.md`: SPEC. 근거로 든 문장이 10절 [LESSON]의 추정값이면 판정에 "추정값"임을 적는다
 - `r6.json`: `stimulus`(차이를 내는 가장 짧은 자극, 사건 시간순), `difference`(첫 차이: 스트림, 순번, 원본(a)과 재생성(b)의
   트랜잭션), `ref`/`regen`(각 출력 스트림의 트랜잭션 앞부분), `inputs_accepted`(받아들인 입력 수)
 
@@ -109,7 +111,7 @@ R6_TASK = """\
 
 
 def make_r6_task(name: str, spec: str | Path, r6: dict) -> Task:
-    inputs = {"spec.md": Path(spec), "r6.json": json.dumps(r6, ensure_ascii=False, indent=1)}
+    inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "r6.json": json.dumps(r6, ensure_ascii=False, indent=1)}
     return Task("arbiter", name, R6_TASK.format(out=OUT), inputs=inputs, tools=False, outputs=[OUT])
 
 
