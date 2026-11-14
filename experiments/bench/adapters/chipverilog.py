@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from experiments.bench.common.modules import dedupe_modules  # noqa: F401  (시험과 pymtl 비교 스크립트가 여기서 가져온다)
 from experiments.bench.common.schema import BenchItem, EvalSpec
 
 # 이 저장소(experiments/bench/adapters)와 pymtl(src/rtl_factory/bench/adapters) 어디에 있든 위로 올라가며 데이터를 찾는다
@@ -70,24 +71,6 @@ def to_item(rec: dict, src_root: Path) -> BenchItem:
 
 def load_chipverilog(path: Path, src_root: Path) -> list[BenchItem]:
     return [to_item(r, src_root) for r in load_records(path)]
-
-
-MODULE_BLOCK_RE = re.compile(r"^\s*module\s+([A-Za-z_]\w*)\b.*?^\s*endmodule\b", re.M | re.S)
-
-
-def dedupe_modules(text: str) -> tuple[str, list[str]]:
-    """같은 이름의 module 정의가 둘 이상이면 처음 것만 남긴다 (파일 목록은 제공 셀이 먼저 온다)."""
-    seen: set[str] = set()
-    dropped: list[str] = []
-
-    def keep(m: re.Match) -> str:
-        if m.group(1) in seen:
-            dropped.append(m.group(1))
-            return f"// [rtlf] 중복 정의 제거: {m.group(1)} (제공 셀을 씀)"
-        seen.add(m.group(1))
-        return m.group(0)
-
-    return MODULE_BLOCK_RE.sub(keep, text), dropped
 
 
 _CHECK_RE = re.compile(r"^\s*\d+\s*ps\s+(Answer is correct|Error! \S+ is incorrect)\s+([0-9a-fA-Fxz]+)", re.M)
@@ -182,14 +165,19 @@ def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int
             if m.group(1) not in unproven:
                 unproven.append(m.group(1))
     stage = {"compile_fail": "compile"}.get(r.get("status"), "sim")
+    try:   # 공식 도구가 정답 쪽에서 찾지 못해 스텁으로 바꾼 하위 모듈 (JSON 문자열). 있으면 채점 기준이 정답이 아니다
+        stubs = json.loads(r.get("generated_stub_modules") or "[]")
+    except (TypeError, ValueError):
+        stubs = []
     # 자체 검사 TB 실패면 값 목록만으로는 Repair가 지연 문제를 보지 못한다. 출력 패턴을 읽어 한 줄 진단을 앞에 붙인다
     diag = ""
     if not ok and (sl := adir / "sim.log").exists():
         tbs = sorted(p for p in des.glob("*.v") if re.search(r"tb|test", p.name, re.I))
         diag = diagnose_sim(sl.read_text(errors="replace"), tbs[0].read_text(errors="replace") if tbs else "")
     return {"ok": ok, "kind": "chipverilog", "status": r.get("status"), "flow": r.get("flow"), "proof_type": r.get("proof_type"),
-            "stage": stage, "unproven_outputs": unproven, "deduped_modules": dropped, "diagnosis": diag,
+            "stage": stage, "unproven_outputs": unproven, "deduped_modules": dropped, "diagnosis": diag, "stub_modules": stubs,
             "log_tail": "" if ok else (f'{r.get("status")}: ' + (diag + " " if diag else "")
+                                       + (f"정답의 하위 모듈 {stubs}이(가) 데이터셋에 없어 공식 도구의 스텁으로 채점됨 (채점 결함). " if stubs else "")
                                        + (f"정답과 등가가 증명되지 않은 출력 {unproven[:20]} (사이클 단위 비교). " if unproven else "")
                                        + f'{r.get("reason", "")} {r.get("counterexample_summary", "")}')[:1500]}
 

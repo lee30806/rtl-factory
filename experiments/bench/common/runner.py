@@ -14,7 +14,7 @@ from experiments.bench.common import ext_fix
 from experiments.bench.common.lec import yosys_lec
 from experiments.bench.common.schema import BenchItem, BenchResult
 from pipeline.importer.sources import SourceError
-from experiments.bench.common.to_spec import _read_header_text, extract_header_l1, generate_spec, strip_to_header
+from experiments.bench.common.to_spec import _read_header_text, ensure_header, extract_header_l1, generate_spec, strip_to_header
 from pipeline.agents import roles as roles_mod, spec_writer
 from pipeline.agents.task import RUNS, QuotaExceeded, Task, run_task
 from pipeline.emitter.sdc import emit_sdc
@@ -237,17 +237,20 @@ TB_FILE_CHARS = 8000
 
 def external_tb_files(item: BenchItem) -> dict[str, str]:
     """Repair에 주는 외부 TB 원문과 기대값 파일 (채점에 쓴 보정을 거친 것). 정답 RTL은 넣지 않는다. 파일마다 앞부분만 자른다."""
-    if item.eval.kind == "iverilog" and item.eval.tb_files:
-        with tempfile.TemporaryDirectory() as tmp:
-            tb_dir = ext_fix.tb_bundle(item, Path(tmp) / "tb", _prepare_iverilog_tb)
-            files = sorted(f for f in tb_dir.iterdir() if f.is_file())
-            return {f.name: f.read_text(encoding="utf-8", errors="replace")[:TB_FILE_CHARS] for f in files}
-    if item.eval.kind == "chipverilog" and item.reference_rtl:
-        des = Path(item.reference_rtl[0]).parent
-        ref = {Path(p).resolve().name for p in item.reference_rtl}
-        return {f.name: f.read_text(encoding="utf-8", errors="replace")[:TB_FILE_CHARS]
-                for f in sorted(des.glob("*.v")) if f.name not in ref and re.search(r"tb|test", f.name, re.I)}
-    return {}
+    if not has_external_tb(item):
+        return {}
+    with tempfile.TemporaryDirectory() as tmp:
+        tb_dir = ext_fix.tb_bundle(item, Path(tmp) / "tb", _prepare_iverilog_tb)
+        files = sorted(f for f in tb_dir.iterdir() if f.is_file())
+        return {f.name: f.read_text(encoding="utf-8", errors="replace")[:TB_FILE_CHARS] for f in files}
+
+
+def has_external_tb(item: BenchItem) -> bool:
+    """외부 TB를 근거로 Repair·SPEC 보정을 할 수 있는 문제: RTLLM(iverilog TB), RealBench(Verilator TB), CVDP(cocotb 테스트),
+    ChipVerilog 가운데 자체 검사 TB가 있는 문제. TB 없이 정답과의 등가로만 채점하는 문제는 정답을 볼 수 없으므로 근거가 없다."""
+    if item.eval.kind in ("iverilog", "realbench", "cvdp"):
+        return True
+    return item.eval.kind == "chipverilog" and bool(ext_fix.chipverilog_tb_files(item))
 
 
 def evaluate_rtl(item: BenchItem, sv_files: list[Path], eval_dir: Path) -> dict[str, Any]:
@@ -315,6 +318,14 @@ def evaluate_rtl(item: BenchItem, sv_files: list[Path], eval_dir: Path) -> dict[
     if kind == "chipverilog":
         from experiments.bench.adapters.chipverilog import evaluate as chipverilog_evaluate
         return chipverilog_evaluate(item, sv_files, eval_dir)
+
+    if kind == "realbench":
+        from experiments.bench.adapters.realbench import evaluate as realbench_evaluate
+        return realbench_evaluate(item, sv_files, eval_dir)
+
+    if kind == "cvdp":
+        from experiments.bench.adapters.cvdp import evaluate as cvdp_evaluate
+        return cvdp_evaluate(item, sv_files, eval_dir)
 
     if kind == "yosys_lec":
         return yosys_lec([Path(p) for p in item.reference_rtl], sv_files, item.top, eval_dir,
@@ -487,6 +498,7 @@ def run_bench_item(
         if (ext_spec_dir / "spec.md").exists():
             shutil.copytree(ext_spec_dir, out_dir / "spec", dirs_exist_ok=True)
             # 헤더 추출이 바뀐 뒤 쓴 SPEC이 아니면 (예: 파라미터가 빠진 2~4절) 버리고 새로 쓴다
+            ensure_header(item, out_dir / "spec", roles, isolate=isolate)
             top_l1, _, _ = extract_header_l1(item, out_dir / "spec" / "l1_extract")
             if stale := spec_writer.gate(spec_path, top_l1):
                 print(f"[{item.id}] --spec-dir SPEC이 지금의 헤더 추출과 맞지 않아 새로 씀: {stale[:2]}", flush=True)
@@ -603,10 +615,19 @@ def run_bench_item(
         bench_pass_any_final=first["bench_pass_any"] or any(r.get("bench_pass_any") for r in rounds),
         golden={**last["golden"], "round": last_round} if last.get("golden") else None,
         sim_model=bool(rep.get("sim_model")),
-        lessons=_lessons(out_dir),
+        lessons=_lessons(out_dir) + _grading_defects(first),
     )
     res_file.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return result
+
+
+def _grading_defects(scored: dict[str, Any]) -> list[str]:
+    """채점 기준 자체의 결함: 공식 도구가 정답의 하위 모듈을 자체 스텁으로 바꿔 채점한 경우 (ChipVerilog or1200_sb의
+    or1200_sb_fifo: 데이터셋에 원본이 없어 4단 FIFO 대신 1단 스텁). 정답이 원본과 다르므로 사람이 집계에서 가려야 한다.
+    experiments/bench/patches/의 원본 복원 파일을 데이터셋에 넣으면 스텁 없이 채점된다."""
+    stubs = sorted({m for c in scored["candidates"].values() for m in (c["bench_eval"].get("stub_modules") or [])})
+    return [f"채점 결함: 공식 도구가 정답의 하위 모듈 {stubs}을(를) 데이터셋에 원본이 없어 자체 스텁으로 대체해 채점함. "
+            "정답이 원본 설계와 다르다. 집계에서 가리거나 experiments/bench/patches의 원본을 데이터셋에 복원할 것"] if stubs else []
 
 
 def _round_fields(scored: dict[str, Any]) -> dict[str, Any]:
@@ -746,7 +767,7 @@ def select_golden(rep: dict[str, Any], candidates_info: dict[str, dict[str, Any]
 def repair_trigger(item: BenchItem, scored: dict[str, Any]) -> int | None:
     """외부 Repair 회차를 돌릴 조건: 외부 TB(iverilog, chipverilog) 채점에서 통과한 후보가 없고, SPEC에 미정의 동작이 있어
     그 입력에서 실패했을 수 있으며, 들여올 후보가 있음. 조건이 맞으면 들여올 후보 번호."""
-    if item.eval.kind not in ("iverilog", "chipverilog") or scored.get("golden_pass") or scored["rep"].get("sim_model") \
+    if not has_external_tb(item) or scored.get("golden_pass") or scored["rep"].get("sim_model") \
             or scored["rep"].get("status") == "paused_quota" or not spec_gaps(scored):
         return None
     return seed_candidate(scored)
@@ -768,8 +789,8 @@ def spec_gaps(scored: dict[str, Any]) -> list[str]:
 
 def ext_fix_trigger(item: BenchItem, scored: dict[str, Any]) -> str | None:
     """외부 TB 보정이 필요한 경우: 외부 TB를 통과한 후보가 없음(external_fail) 또는 통과한 후보를 파이프라인이 고르지 못함(internal_mismatch).
-    외부 TB 채점(iverilog)이 아니거나, 채점까지 간 후보가 없거나(근거가 없음), 할당량으로 멈췄으면 하지 않는다."""
-    if item.eval.kind != "iverilog" or scored["bench_pass_chosen"] or scored.get("golden_pass") \
+    외부 TB가 없는 채점(등가만, LEC)이거나, 채점까지 간 후보가 없거나(근거가 없음), 할당량으로 멈췄으면 하지 않는다."""
+    if not has_external_tb(item) or scored["bench_pass_chosen"] or scored.get("golden_pass") \
             or scored["rep"].get("status") == "paused_quota":
         return None
     if scored["bench_pass_any"]:
@@ -799,9 +820,10 @@ def _ext_fix_spec(item: BenchItem, rdir: Path, trigger: str, spec_path: Path, ou
     for ck, c in scored["candidates"].items():
         if not c["bench_eval"].get("stage"):
             continue
+        # 로그: RTLLM은 eval/<c>/tb/ 바로 아래, ChipVerilog 공식 도구는 result_root/rtlf/<모듈>/<모듈>_t1/ 아래
+        logs = [f for name in ("compile.log", "sim.log") for f in sorted((eval_root / ck / "tb").rglob(name))][:4]
         cands[ck] = {"rtl": sorted((eval_root / ck / "rtl").glob("*.sv")),
-                     "result": {"pipeline_ok": c["pipeline_ok"], **c["bench_eval"]},
-                     "logs": [f for f in (eval_root / ck / "tb" / "compile.log", eval_root / ck / "tb" / "sim.log") if f.exists()]}
+                     "result": {"pipeline_ok": c["pipeline_ok"], **c["bench_eval"]}, "logs": logs}
     rep = scored["rep"]
     internal = {"pipeline_status": rep.get("status"), "chosen": rep.get("chosen"),
                 "passing_candidates": [ck for ck, c in scored["candidates"].items() if c["bench_eval"].get("ok")],
@@ -839,6 +861,7 @@ def run_standalone_item(
             return BenchResult(**saved)
 
     t0 = time.monotonic()
+    ensure_header(item, out_dir / "spec", roles, isolate=isolate)
     raw_text = _read_header_text(item.header_sv)
     clean_hdr = strip_to_header(raw_text, item.top)
     out_rel = f"out/{item.top}.sv"

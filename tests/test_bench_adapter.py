@@ -491,6 +491,23 @@ def test_ext_fix_trigger():
     assert ext_fix_trigger(item, _scored("pass", False, [False, False])) is None
 
 
+def test_ext_fix_trigger_chipverilog_needs_self_checking_tb(tmp_path: Path):
+    """ChipVerilog도 자체 검사 TB가 있으면 외부 TB 보정을 하고, 등가로만 채점하는 문제(정답을 볼 수 없음)는 하지 않는다."""
+    from experiments.bench.common.runner import ext_fix_trigger, has_external_tb, repair_trigger, _grading_defects
+    des = tmp_path / "des"
+    des.mkdir()
+    (des / "x.v").write_text("module x; endmodule\n", encoding="utf-8")
+    item = BenchItem("chipverilog", "x", "standalone", "x", "", "", reference_rtl=[str(des / "x.v")], eval=EvalSpec(kind="chipverilog"))
+    sc = _scored("failed", False, [False, False])
+    assert not has_external_tb(item) and ext_fix_trigger(item, sc) is None
+    (des / "x_TB.v").write_text("module tb; endmodule\n", encoding="utf-8")
+    assert has_external_tb(item) and ext_fix_trigger(item, sc) == "external_fail"
+    sc["rep"]["review"] = [{"code": "UNDEFINED", "message": "EXC-03 미정의: 특수값"}]
+    assert repair_trigger(item, sc) == 0
+    sc["candidates"]["c0"]["bench_eval"]["stub_modules"] = ["or1200_sb_fifo"]
+    assert "or1200_sb_fifo" in _grading_defects(sc)[0] and "채점 결함" in _grading_defects(sc)[0]
+
+
 def test_run_bench_item_ext_fix_keeps_first_result(tmp_path: Path, monkeypatch):
     """외부 TB 보정 뒤에도 pass@1 필드는 첫 실행 결과 그대로이고, 보정 결과와 수정 사유는 ext_fix와 *_final에 따로 남는다."""
     from experiments.bench.common import runner as rmod

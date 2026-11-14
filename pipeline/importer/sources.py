@@ -149,6 +149,8 @@ class Design:
         po.additionalIncludePaths = [str(d) for d in self.incdirs]
         co = pyslang.CompilationOptions()
         co.topModules = {inp.top}
+        # 일부 파일에만 `timescale이 있으면 slang은 나머지를 MissingTimeScale로 거부한다 (CVDP 제공 셀). 없는 파일의 기본값을 준다
+        co.defaultTimeScale = pyslang.TimeScale.fromString("1ns/1ps")
         co.paramOverrides = [f"{k}={v}" for k, v in inp.params.items()]
         bag.preprocessorOptions, bag.compilationOptions = po, co
         self.tree = pyslang.SyntaxTree.fromBuffers(bufs, self.sm, bag)

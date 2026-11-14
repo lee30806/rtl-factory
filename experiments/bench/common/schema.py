@@ -7,12 +7,13 @@ from typing import Any
 
 @dataclass
 class EvalSpec:
-    kind: str = "iverilog"                              # iverilog | verilator | cvdp_docker | yosys_lec
-    tb_files: list[str] = field(default_factory=list)
+    kind: str = "iverilog"                              # iverilog | chipverilog | realbench | cvdp | yosys_lec
+    tb_files: list[str] = field(default_factory=list)   # 에이전트(Repair, SPEC 보정)에게 보여 줄 수 있는 외부 TB 파일 (정답 모델 제외)
     pass_pattern: str = "Your Design Passed|PASS"
     top_tb: str | None = None
     lec_resets: list[dict[str, str]] = field(default_factory=list)   # yosys_lec: 첫 사이클에 걸 리셋 [{"port", "active"}]
     lec_depth: int = 30                                               # yosys_lec: 플롭이 있을 때 BMC 깊이
+    extra: dict[str, Any] = field(default_factory=dict)               # 채점기별 값 (realbench: harness_dir, tb_top / cvdp: harness_dir, env)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EvalSpec:
@@ -23,6 +24,7 @@ class EvalSpec:
             top_tb=d.get("top_tb"),
             lec_resets=list(d.get("lec_resets", [])),
             lec_depth=int(d.get("lec_depth", 30)),
+            extra=dict(d.get("extra", {})),
         )
 
 
@@ -39,6 +41,7 @@ class BenchItem:
     defines: dict[str, str] = field(default_factory=dict)
     cells: list[str] = field(default_factory=list)
     reference_rtl: list[str] = field(default_factory=list)   # B1~B4에서는 에이전트 작업 디렉터리에 절대 노출하지 않음
+    attachments: list[str] = field(default_factory=list)     # 명세가 참조하는 그림 파일 (SPEC 작성 작업 디렉터리에 figures/<이름>으로 복사)
     eval: EvalSpec = field(default_factory=EvalSpec)
 
     def to_dict(self) -> dict[str, Any]:
@@ -59,6 +62,7 @@ class BenchItem:
             defines=dict(d.get("defines", {})),
             cells=list(d.get("cells", [])),
             reference_rtl=list(d.get("reference_rtl", [])),
+            attachments=list(d.get("attachments", [])),
             eval=ev if isinstance(ev, EvalSpec) else EvalSpec.from_dict(ev),
         )
 

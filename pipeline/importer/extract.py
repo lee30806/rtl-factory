@@ -795,11 +795,14 @@ class Extractor:
         return " ".join(text.split())
 
     def _need_macro(self, name: str) -> None:
-        self._macros_used.setdefault(name, None)
+        """매크로가 참조하는 매크로를 먼저 넣어 localparam 선언 순서가 참조보다 앞서게 한다 (e203 `E203_ITCM_ADDR_WIDTH → `E203_CFG_...)."""
+        if name in self._macros_used:
+            return
         m = self.d.macros[name]
         for u in re.findall(r"`([A-Za-z_][A-Za-z0-9_$]*)", m.value):
             if u in self.d.macros and u not in self._macros_used:
                 self._need_macro(u)
+        self._macros_used.setdefault(name, None)
 
     def _need_const(self, ref: str, member: str, scope, sym=None) -> None:
         if member in self._consts_used:

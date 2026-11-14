@@ -23,6 +23,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.bench.adapters.chipverilog import load_chipverilog  # noqa: E402
+from experiments.bench.adapters.cvdp import load_cvdp  # noqa: E402
+from experiments.bench.adapters.realbench import load_realbench  # noqa: E402
 from experiments.bench.adapters.rtl_benchls import load_benchls  # noqa: E402
 from experiments.bench.adapters.rtllm import load_rtllm_dir, materialize_builtin_pilot  # noqa: E402
 from experiments.bench.common.metrics import write_summary  # noqa: E402
@@ -30,6 +32,15 @@ from experiments.bench.common.roundtrip import rescore_item, run_roundtrip_item,
 from experiments.bench.common.runner import run_bench_item, run_spec_item, run_standalone_item  # noqa: E402
 from experiments.bench.common.schema import BenchItem, BenchResult  # noqa: E402
 from pipeline.agents import roles as roles_mod  # noqa: E402
+
+MANIFEST = Path(__file__).resolve().parent / "datasets.json"   # 평가 데이터셋 4종의 출처·채점기·제외 문제
+
+
+def manifest(bench: str) -> dict:
+    try:
+        return json.loads(MANIFEST.read_text(encoding="utf-8")).get(bench, {})
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _run_suite(
@@ -132,8 +143,11 @@ def _run_suite(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="외부 RTL 벤치마크 실행기")
-    ap.add_argument("--bench", choices=["rtllm", "rtl_benchls", "chipverilog"], default="rtllm", help="대상 벤치마크")
-    ap.add_argument("--dataset", type=Path, help="벤치마크 데이터셋 디렉터리, rtl_benchls는 slice_XX.jsonl (rtllm은 생략 시 내장 파일럿 예제 사용)")
+    ap.add_argument("--bench", choices=["rtllm", "rtl_benchls", "chipverilog", "realbench", "cvdp"], default="rtllm", help="대상 벤치마크")
+    ap.add_argument("--dataset", type=Path, help="벤치마크 데이터셋 디렉터리, rtl_benchls는 slice_XX.jsonl (rtllm은 생략 시 내장 파일럿 예제 사용. "
+                                                 "chipverilog·realbench·cvdp는 생략 시 experiments/bench/datasets.json의 기본 경로)")
+    ap.add_argument("--include-defects", action="store_true",
+                    help="datasets.json의 exclude(정답 자체가 채점을 통과하지 못하는 문제)도 실행")
     ap.add_argument("--subset", choices=["sequential", "combinational", "all"], default="sequential")
     ap.add_argument("--mode", choices=["harness", "standalone", "both", "spec"], default="harness", help="실행 모드")
     ap.add_argument("--spec-dir", type=Path, help="미리 작성된 SPEC 디렉터리 (지정 시 <spec-dir>/<id>/spec을 복사해 재사용)")
@@ -170,11 +184,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     elif args.bench == "chipverilog":
         items = load_chipverilog(args.dataset or ROOT / "build" / "cvdp_datasets" / "cvdp_chipverilog.jsonl", out_dir / "_src")
+    elif args.bench == "realbench":
+        items = load_realbench(args.dataset, out_dir / "_src")
+    elif args.bench == "cvdp":
+        items = load_cvdp(args.dataset, out_dir / "_src")
     elif args.dataset and args.dataset.exists():
         items = load_rtllm_dir(args.dataset, subset=args.subset)
     else:
         items = [materialize_builtin_pilot(out_dir / "_pilot_src")]
 
+    if not args.include_defects and (excl := manifest(args.bench).get("exclude")):
+        dropped = [it.id for it in items if it.id in excl]
+        items = [it for it in items if it.id not in excl]
+        if dropped:
+            print(f"[{args.bench}] 데이터셋 결함으로 제외 {len(dropped)}개 (--include-defects로 포함): {dropped}", flush=True)
     if args.filter:
         items = [it for it in items if args.filter in it.id or args.filter in it.top
                  or re.fullmatch(args.filter, it.id) or re.fullmatch(args.filter, it.top)]
