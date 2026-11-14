@@ -111,6 +111,9 @@ def check_ports(spec: Spec, ir: dict | None) -> list[SpecIssue]:
     f = _name(spec)
     _, prov = port_rows(spec, ir["domains"])
     text = "\n".join(r.text for r in spec.requirements if r.section in (5, 6, 7))
+    # 요구사항 줄 아래 디코드 표(| 조건 | 출력 |)의 칸도 그 요구사항의 일부다
+    text += "\n" + "\n".join(" ".join(t.header + [c for row in t.rows for c in row])
+                             for n in (5, 6, 7) if n in spec.sections for t in spec.sections[n].tables)
     out = []
     for p in ir["ports"]:
         sigs = p["signals"] if "bundle" in p else [p]

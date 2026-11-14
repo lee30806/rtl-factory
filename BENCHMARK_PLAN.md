@@ -24,6 +24,33 @@ Oct 19, 2026 · @Seungjoon Lee
 | **B4** | **CVDP** | `cid003` (NL Spec-to-RTL)<br>`cid005` (Spec-to-RTL with Module Reuse) | 수백 개<br>(동기식 설계 필터링) | CVDP 공식 Docker 하니스 (`cocotb` / `iverilog` / `Verilator`) | 산업계 최신 에이전트 벤치마크 기준의 표준 지표(`pass@1`) 확보 |
 | **B5** | **RTL-BenchLS** | `Round-Trip Reasoning`<br>(원본 RTL → SPEC 추출 → RTL 재생성) | 샘플링 세트 (100~300개 동기식 모듈) | `yosys_lec`<br>(Yosys `equiv` + `miter` BMC) | 수작업 TB 없이 `pipeline.scheduler.port`(P11)와 연계한 대규모 재현성 평가 |
 
+### 1.1 평가 데이터셋 확정 (2026-11-13)
+
+평가에 쓰는 데이터셋은 아래 4종으로 확정하고, 출처·채점기·결함 제외 목록은 `experiments/bench/datasets.json`에 둔다
+(`run_bench.py`가 읽어 `exclude` 문제를 기본으로 뺀다. `--include-defects`로 포함). 검토 과정에서 제안된 **VeriReason**은
+RTLCoder 합성 문제에 GPT-4.1 추론 단계와 테스트벤치를 붙인 SFT/GRPO 학습 데이터라 평가에서 뺐다 (이 파이프라인은 모델을 학습하지 않는다).
+B5 RTL-BenchLS 왕복 평가는 별도 트랙으로 유지한다.
+
+| 데이터셋 | 역할 | 문제 수 | 입력 | 채점 | 어댑터 |
+|---|---|---|---|---|---|
+| **RTLLM 2.0** | 기초 역량·회귀 검사 (포화 벤치마크) | 50 | `design_description.txt` + 헤더 | 원본 `testbench.v` (iverilog) | `adapters/rtllm.py` |
+| **ChipVerilog** | 계층 분해·하위 셀 재사용 | 64 (결함 5 제외 → 59) | pymtl 변환본 프롬프트 + include + 셀 | 공식 `tools/formal_equivalence.py` | `adapters/chipverilog.py` |
+| **RealBench** | 산업 IP·멀티모달 명세·시스템 통합 | 64 (모듈 60, 시스템 4) | 원본 `<모듈>.md` 본문 + 그림 75장(`figures/`) + include + 하위 모듈 | 원본 Verilator TB (`*_testbench.sv`, 정답 모델 비교) | `adapters/realbench.py` |
+| **CVDP v1.1.0** | 에이전틱 산업 벤치마크 표준 지표 | 152 (`cid003` 122, `cid005` 30; 결함 2 제외 → 150) | 프롬프트 + 제공 문서·RTL. 헤더는 HeaderWriter 에이전트가 작성 | 공식 cocotb 하니스(`src/test_runner.py`)를 Docker 없이 실행 | `adapters/cvdp.py` |
+
+데이터셋 준비에서 확인한 사실과 그에 맞춘 처리:
+- **ChipVerilog**: 정답 64개를 후보로 넣어 공식 도구로 자기 채점한 결과 rotator·signed_shifter는 정답이 iverilog에서 컴파일되지 않고(reference_fail),
+  instruction_mem·or1200_cfgr·or1200_lsu는 ROM(`$mem_v2`) 때문에 등가 검사가 돌지 않는다. 이 5개는 어떤 후보도 통과할 수 없어 뺀다. 정답의 하위 모듈이
+  데이터셋에 없어 스텁으로 채점되는 15개(`stub_graded`)는 결과에 표시하고 평가에는 넣는다. 30문제는 프롬프트가 말하는 `ifdef` 구성 매크로가 제공
+  `or1200_defines.v`에서 주석 처리되어 있어 정답이 "정의되지 않은 쪽" 구성이다: `to_spec.config_macros`가 LESSON으로 알리고 SPEC 규칙이 그 구성을 고르게 한다.
+- **RealBench**: 명세 그림(블록도·FSM)은 SPEC 작성 작업 디렉터리에 `figures/`로 첨부해 에이전트가 Read 도구로 본다. `problems.jsonl`이 붙이는 defines 문서
+  (최대 70만 자)와 pymtl 변환본의 추가 안내문은 넣지 않고 include 파일로 준다. 변환본의 `system_e203_cpu_top` 헤더 오류는 정답 포트로 헤더를 만들어 바로잡는다.
+  JasperGold 형식 검증은 하지 않는다.
+- **CVDP**: 공개본에 정답 RTL이 없고 프롬프트에 모듈 헤더가 있는 문제는 8개뿐이라 `to_spec.ensure_header`가 HeaderWriter 에이전트로 헤더를 쓴다
+  (공식 설정대로 테스트는 보여 주지 않는다). 하니스 `.env`가 없는 2개는 뺀다. 채점은 `.env`의 `/code`, `/src` 경로를 채점 디렉터리로 바꿔 cocotb + Icarus로 돌린다.
+- 제공 셀 일부에만 `timescale이 있는 문제(CVDP gcd)와 매크로가 다른 매크로를 참조하는 include(e203)를 위해 importer가 기본 timescale을 주고
+  매크로 localparam을 참조 순서대로 낸다.
+
 ### 제외 범위 (명시적 제외)
 
 - **코드 일부분 편집·빈칸 채우기:** CVDP의 `cid002`(Code Completion), `cid004`(Code Modification), `cid016`(Bug Fixing)과 RTL-BenchLS의 `Masked-Content`, `Repository-Issue` 트랙
@@ -132,6 +159,20 @@ rtl-factory/
 2. **10개 섹션 SPEC 작성 (`BenchSpecWriter`):**
    - coding agent가 `template.md`, 고정된 `tables.md`, 벤치마크의 `prompt_text`(및 `cid005`/Cross-module인 경우 하위 모듈의 포트 정의)를 받아 `out/spec.md`를 작성합니다.
    - 종료 게이트: `tools/pl.py spec_gate out/spec.md --tables tables.md --top <top>` 통과 (`pipeline.spec.check` 오류 0개 + `roundtrip_diff` 일치).
+3. **원문 보존 보상 (2026-11-14):** haiku 5.5 ChipVerilog 63건에서 SPEC이 원문보다 중간값 27% 짧고, 비트 필드 표기가 절반 넘게 사라진
+   모듈(or1200_cpu·sprs·du·qmem_top·wb_biu)과 원문이 이름 붙인 내부 레지스터가 거의 다 버려진 모듈(fpu_addsub_pipeline 208개 중 3개)이
+   전부 등가 채점에 실패했습니다. Architect·Author에게는 `spec.md`만 전달되어 빠진 내용을 복구할 길이 없었고, 템플릿의 "미정의" 허용은
+   모든 출력을 비교하는 채점에서 곧 실패였습니다(or1200_sprs `to_wbmux`). 보상은 우선순위 순으로:
+   - 원문 부록: 완성된 SPEC 뒤에 `## 부록 A. 원문 명세`로 `prompt.txt` 전문을 자동으로 붙입니다(`with_prompt_appendix`, ext_fix 뒤에도 유지).
+     SPEC 검사기는 `## 부록` 아래를 읽지 않습니다. 충돌 시 SPEC 5~9절 우선.
+   - 출력 미정의 금지: 5~7절에서 출력 포트 값을 `미정의:`로 두면 벤치 검사 `UNDEFINED_OUTPUT` 오류. 리셋 없는 도메인의 첫 값과 한쪽만 리셋은 예외.
+     원문이 암시하는 기본값(미매핑·선택 없음 0, 쓰기 조건 아니면 유지, 예약 비트 0)을 (필수)로 정하고 [LESSON]을 남깁니다.
+   - 디코드 표 허용: 요구사항 줄 아래 `| 조건 | 출력 |` 표를 그 요구사항의 일부로 보고 표 칸의 포트 이름도 포트 참조로 인정합니다.
+   - 원문 명시 레지스터·단 구성: `notes.json`의 `named_registers`(숫자 접미 식별자)를 9절 필수 구조에 빠짐없이 옮기게 합니다.
+   - 원문 커버리지: 원문의 밑줄 식별자·부분 비트 범위·수치 리터럴 중 SPEC(부록 제외)에 남은 비율이 80% 아래면 첫 작성 뒤 한 번 누락 목록과
+     함께 다시 쓰게 합니다(`PROMPT_COVERAGE`, 토큰 10개 미만은 검사 안 함). 기존 63건에 대보면 17건이 다시 쓰기 대상이었고 fpu_mul 4%,
+     fpu_exceptions 23%처럼 실제 손실이 큰 항목이 걸립니다.
+   - 동작 흐름 소절: 원문의 Processing Flow 서술을 1절 `### 동작 흐름`에 요약 없이 옮깁니다.
 
 ### 4.3 무인 실행 정책 (`runner.py`: `--auto-approve`)
 

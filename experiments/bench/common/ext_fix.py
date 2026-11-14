@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from experiments.bench.common.schema import BenchItem
+from experiments.bench.common.to_spec import with_prompt_appendix
 from pipeline.agents import roles as roles_mod, spec_writer
 from pipeline.agents.task import RUNS, Task, TaskResult, run_task
 from pipeline.spec.parse import load as load_spec
@@ -146,17 +148,30 @@ def revise_spec(item: BenchItem, work_dir: Path, trigger: str, spec_path: Path, 
     if not res.ok:
         return None, [], res.errors, res
     out = work_dir / "spec.md"
-    out.write_text(Path(res.outputs[OUT]).read_text(encoding="utf-8"), encoding="utf-8")
+    out.write_text(with_prompt_appendix(Path(res.outputs[OUT]).read_text(encoding="utf-8"), item.prompt_text), encoding="utf-8")
     changes = json.loads(Path(res.outputs[CHANGES]).read_text(encoding="utf-8"))
     (work_dir / "changes.json").write_text(json.dumps(changes, ensure_ascii=False, indent=1), encoding="utf-8")
     errs = spec_writer.gate(out, top_l1)
     return (out if not errs else None), changes, errs, res
 
 
+def chipverilog_tb_files(item: BenchItem) -> list[Path]:
+    """ChipVerilog 공식 채점이 쓰는 자체 검사 TB (정답 디렉터리의 *TB*.v / *tb*.v). 정답 RTL은 제외. 없으면 등가 채점만 하는 문제."""
+    if item.eval.kind != "chipverilog" or not item.reference_rtl:
+        return []
+    des = Path(item.reference_rtl[0]).parent
+    ref = {Path(p).resolve().name for p in item.reference_rtl}
+    return sorted(f for f in des.glob("*.v") if f.name not in ref and re.search(r"tb|test", f.name, re.I))
+
+
 def tb_bundle(item: BenchItem, dst: Path, prepare) -> Path:
     """외부 TB와 데이터 파일을 dst에 모은다 (채점에 쓴 것과 같은 보정을 거침). 정답 RTL은 넣지 않는다."""
     dst = Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
+    if item.eval.kind == "chipverilog":
+        for f in chipverilog_tb_files(item):
+            (dst / f.name).write_bytes(f.read_bytes())
+        return dst
     with tempfile.TemporaryDirectory() as tmp:
         prepare(item, [Path(p).resolve() for p in item.eval.tb_files], Path(tmp))
         ref = {Path(p).resolve().name for p in item.reference_rtl}

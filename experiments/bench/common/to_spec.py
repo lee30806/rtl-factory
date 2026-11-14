@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pyslang
 
@@ -31,22 +32,47 @@ BENCH_SPEC_TASK = """\
 - `tables.md`: 모듈 헤더에서 결정론적으로 생성한 2~4절 표. **글자 하나 바꾸지 않고** 그대로 2, 3, 4절에 넣는다
 - `prompt.txt`: 벤치마크 원본 자연어 명세 전문
 - `header.sv`: 포트와 파라미터가 선언된 모듈 헤더
-- `notes.json`: 고정 파라미터, 매크로 상수, 재사용 하위 셀 정보
+- `notes.json`: 고정 파라미터, 매크로 상수, 재사용 하위 셀 정보, 제공 include에 정의되지 않은 구성 매크로(`config_macros`),
+  원문이 이름을 붙여 설명한 내부 레지스터·단(`named_registers`)
+- `figures/`: `prompt.txt`가 `![](./figures/...)`로 참조하는 그림 (있을 때만). 블록도, FSM 상태 전이도, 타이밍도다. Read 도구로 열어 보고
+  상태 이름, 전이 조건, 신호 순서처럼 그림에만 있는 정보를 5~8절에 글로 옮긴다. 그림을 보지 않고 그 부분을 비워 두지 않는다.
 
 ## 할 일
 `{out}`에 10개 섹션 SPEC을 쓴다.
+- **원문은 요약본이 아니라 계약의 근거다:** 외부 채점은 `prompt.txt`를 보고 만든 정답과 모든 출력을 사이클 단위 또는 형식 등가로
+  비교한다. 원문의 레지스터 비트 맵, 주소·명령 디코드, 상태 비트, 내부 레지스터 이름과 단 구성, 기본값은 하나도 빼지 않고 5·7·9절에
+  옮긴다. 파이프라인은 완성된 SPEC 뒤에 원문 전문을 `## 부록 A. 원문 명세`로 자동으로 붙이지만, 5~9절에 없는 요구사항은
+  검증되지 않으므로 부록이 있다는 것을 생략의 근거로 삼지 않는다.
+- 작성 후 벤치 검사(`PROMPT_COVERAGE`)가 `prompt.txt`의 식별자·비트 범위·수치 리터럴 중 SPEC에 없는 것을 알려 주면, 그 항목을
+  5절 디코드 표, 7절 경계 조건, 9절 필수 구조 가운데 맞는 곳에 넣는다.
 - 제목은 반드시 `# {top} SPEC`으로 쓴다.
 - **2절, 3절, 4절은 `tables.md`의 내용을 글자 하나 바꾸지 않고 그대로 복사해 넣는다.**
 - 1절 (`## 1. 목적과 범위`): 모듈의 목적을 한 문단으로 설명하고, 범위 밖 항목을 명시한다.
+  - **동작 흐름 소절:** `prompt.txt`에 처리 순서 서술(Processing Flow, 동작 개요, 단계별 설명)이 있으면 1절 끝에 `### 동작 흐름`
+    소절을 두고 그 서술을 요약하지 않고 옮긴다 (문장 수 제한 없음). 5~7절 요구사항의 근거 문맥이 되어 Author가 해석할 여지를 줄인다.
   - **파라미터 값이 본문 수치보다 우선한다:** `header.sv`의 파라미터 기본값(예: DEPTH = 16)과 `prompt.txt` 본문의 구체 수치(예: "깊이 8",
     "4비트 포인터", "하위 3비트 주소")가 어긋나면 파라미터 값을 따른다. 테스트벤치는 헤더로 인스턴스하므로 파라미터가 실제 계약이고,
     본문 수치는 다른 설정의 예시로 읽는다. 포인터 폭·주소 폭처럼 파라미터에서 유도되는 수는 파라미터 값으로 다시 계산해 5·7·9절에 쓴다
     (`notes.json`의 `param_conflicts`가 찾은 충돌이다). 충돌 사실과 택한 값은 10절에 `- Q-xx [LESSON] ...`으로 남긴다.
+  - **구성 매크로는 제공 include의 정의 여부를 따른다:** `prompt.txt`가 "X가 정의되면(활성화되면) ... 정의되지 않으면 ..."처럼
+    매크로로 갈리는 두 구성을 설명하고 `notes.json`의 `config_macros.undefined`에 그 매크로가 있으면, 정의되지 않은 쪽 구성을 구현
+    대상으로 삼는다. 채점은 제공 include로 컴파일한 정답과 비교하므로 정의된 쪽을 고르면 맞는 설계가 실패한다 (or1200_sb:
+    OR1200_SB_IMPLEMENTED이 주석 처리되어 정답은 FIFO 없는 통과 경로다). 정의되지 않은 쪽이 단순 통과(pass-through)라도 그대로 쓰고,
+    정의된 쪽 동작은 1절 범위 밖에 적으며 10절에 `- Q-xx [LESSON] ...`으로 남긴다. 두 구성 중 무엇을 골랐는지 9절 필수 구조에도 적는다.
 - 5절 (`## 5. 기능 요구사항`): `- REQ-01 (필수) ...` 형식으로 모든 출력 포트와 입력 포트가 최소 한 번 이상 등장하도록
   동작을 구체적인 수치·조건·타이밍으로 기술한다.
   - **중요 (`spec_gate` 규칙):** 3절 인터페이스 표에 있는 모든 포트 이름(번들인 경우 번들 이름 또는 하위 신호 이름, 클럭·리셋 제외)이
     5~7절 요구사항 문장에 최소 한 번 이상 그대로 적혀야 하며, 모든 출력 포트의 구동 조건과 값이 정의되어야 한다.
   - **한 문장 규칙:** 각 요구사항 ID 줄(`- ID (필수) ...`)에는 마침표로 끝나는 **문장 하나만** 쓴다 (두 문장 이상 쓰면 `REQ_MULTI` 경고가 발생함).
+  - **디코드 표 허용:** 주소 맵, 레지스터 비트 맵, 명령·상태 비트, 연산 코드 분기, FSM 상태 전이처럼 조건이 여럿인 내용은 한 문장으로
+    뭉개지 않는다. `- FR-RD-02 (필수) wb_adr_i에 따른 wb_dat_o는 아래 표를 따른다.` 한 줄을 쓰고 바로 아래에 `| 조건 | 출력 |` 마크다운 표를
+    둔다. 표의 행은 그 요구사항의 일부이며, 원문의 모든 경우(값, 비트 위치, 기본 분기)를 행 하나씩 그대로 옮긴다. 표 칸의 포트 이름도
+    `spec_gate` 포트 참조로 인정된다. 원문이 표로 준 것은 표로 옮긴다.
+  - **출력 미정의 금지 (벤치 검사 `UNDEFINED_OUTPUT`):** 출력 포트의 값을 `- ID 미정의: ...`로 두지 않는다. 채점은 모든 출력을 비교하므로
+    미정의는 실패와 같다. 원문이 어떤 경우의 출력을 말하지 않으면 원문이 암시하는 기본값을 (필수)로 정한다: 선택 신호가 하나도 없거나
+    디코드에 걸리지 않는 경우는 0 (예: "MTSR이면 0, 그 외 선택된 그룹 값"이면 미사용 그룹도 0), 쓰기 조건이 아닌 사이클의 레지스터는
+    이전 값 유지, 예약 비트는 0 읽힘. 정한 값과 근거는 10절에 `- Q-xx [LESSON] ...`으로 남긴다. 예외는 리셋이 없는 도메인의 첫 값 전
+    출력(`INIT_NO_RESET`)과 한 도메인만 리셋했을 때(`MULTI_RESET_USAGE`)뿐이다.
   - **프롬프트 충실성 규칙:** `prompt.txt`에 적히지 않은 리셋 해제 직후 첫 사이클 특수 동작(예: 리셋 중의 값을 첫 입력 비트로 간주할지 여부 등)을 임의로 지어내어 필수 요구사항으로 강제하지 않는다. 리셋 해제 후에는 명시적으로 인가된 입력 시퀀스에 대해서만 출력을 규정한다.
   - **명시된 구조는 표준과 달라도 지키고 재검토 알람을 남긴다:** `prompt.txt`가 레지스터 단 수, 동기화 단 수, 포인터나 플래그를
     만드는 레지스터 구성, 카운터 값에 따른 출력 토글 시점처럼 출력 타이밍을 정하는 구조를 명시하면, 표준 관행과 달라도 그 단 수와
@@ -84,6 +110,10 @@ BENCH_SPEC_TASK = """\
   입력 포트가 없는데 출력이 상수인 합성 회로면 9절에 `- 구현 종류: 합성`을 쓴다 (spec_gate `NO_INPUT_KIND` 오류).
 - 8절 (`## 8. 예시 시나리오`): `### SC-01 정상: ...`와 `### SC-02 코너: ...` 두 개 이상의 하위 제목(`###`)과 마크다운 표(`| 입력 | 기대 출력 |`)를 작성한다. 특정 사이클 번호 배열 길이를 강제하기보다 입력 시퀀스에 따른 기대 출력 시퀀스로 기술한다.
 - 9절 (`## 9. 구현 제약`): `### 필수 구조`와 `### 금지 사항`을 적는다 (`notes.json`에 상수나 하위 셀이 있으면 명시).
+  - **원문 명시 레지스터와 단 구성 (필수):** `notes.json`의 `named_registers`가 비어 있지 않으면 `### 필수 구조` 안에
+    `#### 원문 명시 레지스터와 단 구성` 소절을 두고, 원문이 이름 붙인 내부 레지스터·중간 신호·파이프라인 단을 **하나도 빼지 않고**
+    `- <이름>: <원문이 말한 역할과 갱신 조건, 속한 단>` 형식으로 옮긴다. 등가 채점은 이 구성이 만드는 사이클 동작을 그대로 기대하므로
+    "내부 구현은 자유"로 두면 맞는 설계가 실패한다. 이름을 모두 옮긴 뒤 단 번호가 가장 큰 것을 6절 지연과 맞춘다.
   - **헤더/매크로/인클루드 보존 (필수):** `prompt.txt`, `header.sv`, 또는 `notes.json`에 명시된 매크로 정의(`define), 상수, 헤더 인클루드(`include "..."`), 전처리기 지시문이 있는 경우, `### 필수 구조`에 이를 반드시 명시하여 RTL 구현 시 최상단에 누락 없이 선언 및 인클루드하도록 강제한다.
   - **디폴트 값 및 미매핑 분기 명세 (V 조건 - 상태 유지 vs 초기화):** 주소 디코더, 레지스터 맵, 멀티플렉서, case 문에서 미매핑 주소(unmapped address)나 지정되지 않은 디폴트 조건(default condition), 비활성 사이클(idle)에 대해 이전 상태 값을 그대로 유지할지(`hold`, 예: `wb_dat_o <= wb_dat_o`), 특정 디폴트 값으로 초기화할지(`clear`, 예: `wb_dat_o <= 32'd0`)를 5절 기능 요구사항 및 9절 필수 구조에 명확히 명시한다. 프롬프트가 미매핑 주소 접근 시 이전 값 유지를 명시하거나 요구하는 경우 불필요한 `default: wb_dat_o <= 0`을 삽입하지 않도록 명시한다.
   - **비동기 FIFO 필수 구조:** 이중 포트 RAM(`dual_port_RAM`) 하위 인스턴스화, 쓰기/읽기 포인터 바이너리 레지스터 갱신 및 그레이 코드 변환 레지스터 래치, 2단 플립플롭 동기화기, 동기화된 그레이 포인터와의 순수 조합논리 플래그 비교(`assign wfull = ...; assign rempty = ...;`)를 필수 구조로 명시한다. 동기화기 출력을 사용한 플래그 비교는 이미 동기화된 신호이므로 글리치 금지 대상이 아님을 명확히 한다.
@@ -403,6 +433,219 @@ def prompt_stage_depth(prompt_text: str) -> tuple[int | None, str | None]:
     return (best, why) if best else (None, None)
 
 
+_UPPER_ID_RE = re.compile(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b")
+
+
+def config_macros(prompt_text: str, incdirs: list[Path], defines: dict[str, str], header_text: str) -> dict[str, list[str]]:
+    """프롬프트가 말하는 구성 매크로 가운데 제공 include·헤더가 아는 것(`ifdef 검사나 주석 처리된 `define)을 정의 여부로 나눈다.
+    채점은 제공 include로 정답을 컴파일하므로 정의되지 않은 매크로의 구성이 정답이다 (ChipVerilog or1200_sb 등 30문제)."""
+    texts = [header_text]
+    for d in incdirs:
+        for f in sorted(Path(d).glob("*")):
+            if f.is_file() and f.suffix in (".v", ".vh", ".sv", ".svh"):
+                texts.append(f.read_text(encoding="utf-8", errors="replace"))
+    blob = "\n".join(texts)
+    defined = set(re.findall(r"^\s*`define\s+(\w+)", blob, re.M)) | set(defines)
+    # 구성 매크로로 볼 근거: include가 `ifdef로 검사하거나 주석 처리한 이름, 또는 프롬프트가 "X is (not) defined/enabled/disabled"라고 말한 이름
+    known = set(re.findall(r"`(?:ifdef|ifndef|elsif)\s+(\w+)", blob)) | set(re.findall(r"^\s*//\s*`define\s+(\w+)", blob, re.M)) | defined
+    known |= set(re.findall(r"\b([A-Z][A-Z0-9_]+)\b[^.\n]{0,40}?\b(?:is|are|be|when|if|unless)\b[^.\n]{0,20}?"
+                            r"\b(?:defined|undefined|enabled|disabled|commented out|not set|set)\b", prompt_text))
+    mentioned = [m for m in dict.fromkeys(_UPPER_ID_RE.findall(prompt_text)) if m in known]
+    return {"undefined": [m for m in mentioned if m not in defined], "defined": [m for m in mentioned if m in defined]}
+
+
+
+# ---- 원문 보존 (SPEC 압축 손실 보상) --------------------------------------------------------------------------------
+# ChipVerilog haiku 63건에서 SPEC은 원문보다 중간값 27% 짧고 비트 필드 표기의 절반 이상이 사라졌으며, 원문이 이름 붙인
+# 내부 레지스터(fpu_addsub_pipeline 208개 중 3개 남음)와 "미정의"로 둔 출력(or1200_sprs to_wbmux)이 등가 채점 실패로 이어졌다.
+# 보상: (1) 원문 전문을 SPEC 뒤에 부록으로 붙여 모든 에이전트가 보게 하고, (2) 출력의 미정의를 금지하고,
+# (3) 원문 식별자·비트·수치의 SPEC 잔존율을 재서 첫 작성 뒤 한 번 다시 쓰게 하며, (4) 이름 붙은 레지스터 목록을 notes에 준다.
+APPENDIX_HEAD = "## 부록 A. 원문 명세"
+APPENDIX_NOTE = """\
+이 부록은 벤치마크 원문 명세(`prompt.txt`)를 그대로 옮긴 것이다. 1~10절 SPEC이 계약이며, 두 글이 어긋나면 SPEC 5~9절이 우선한다.
+SPEC이 요약했거나 빠뜨린 세부(레지스터 비트, 주소·명령 디코드, 내부 레지스터와 단 구성, 기본값, 동작 흐름)는 이 원문을 따라
+구현하고 검증한다. 외부 채점은 이 원문으로 만든 정답과 모든 출력을 비교한다. 부록은 SPEC 검사기가 섹션·요구사항으로 읽지 않는다.
+"""
+_IDENT_RE = re.compile(r"(?<![\w`.])[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b")
+_BITS_RE = re.compile(r"\b\w+\[\d+(?::\d+)?\]")
+_LIT_RE = re.compile(r"\b\d+'[hbdoHBDO][0-9a-fA-F_xXzZ?]+\b|\b0x[0-9a-fA-F]+\b")
+_NAMED_REG_RE = re.compile(r"(?<![\w`.])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*_\d+\b")
+_UNDEF_EXEMPT_RE = re.compile(r"리셋|초기|시뮬레이션\s*시작|첫\s*값|전원|reset|initial", re.I)
+COVERAGE_MIN = 0.8
+COVERAGE_MIN_TOKENS = 10
+
+
+def with_prompt_appendix(spec_text: str, prompt_text: str) -> str:
+    """SPEC 뒤에 원문 명세를 부록으로 붙인다 (이미 있으면 바꿔 넣는다: 멱등)."""
+    body = spec_text.split("\n" + APPENDIX_HEAD, 1)[0].rstrip()
+    if body.startswith(APPENDIX_HEAD):
+        body = ""
+    return f"{body}\n\n{APPENDIX_HEAD}\n\n{APPENDIX_NOTE}\n{prompt_text.rstrip()}\n"
+
+
+def strip_prompt_appendix(spec_text: str) -> str:
+    return spec_text.split("\n" + APPENDIX_HEAD, 1)[0]
+
+
+def prompt_tokens(prompt_text: str, top: str = "") -> set[str]:
+    """원문에서 SPEC에 남아야 할 토큰: 밑줄 식별자, 비트 범위 표기, 크기 있는 수치 리터럴(1비트 제외)·16진수."""
+    toks = set(_IDENT_RE.findall(prompt_text)) | set(_BITS_RE.findall(prompt_text)) | set(_LIT_RE.findall(prompt_text))
+    toks -= {top}
+    return {t for t in toks if len(t) >= 3 and not re.fullmatch(r"[A-Za-z]_[A-Za-z]", t) and not t.endswith((".v", ".sv"))
+            and not re.fullmatch(r"1'[bB][01xXzZ?]", t)}
+
+
+def _token_present(tok: str, body: str) -> bool:
+    if tok in body:
+        return True
+    # `name[N:0]`는 포트 전체 폭 표기다. 3절 표가 폭을 `logic [N:0]`으로 따로 적으므로 이름이 있으면 남은 것으로 본다.
+    # 부분 범위(`doutb[19:1]`, `TTCR[31:28]`)는 그대로 있어야 한다
+    m = re.fullmatch(r"(\w+)\[(\d+):0\]", tok)
+    return bool(m) and re.search(rf"(?<![A-Za-z0-9_]){re.escape(m.group(1))}(?![A-Za-z0-9_])", body) is not None
+
+
+def prompt_coverage(prompt_text: str, spec_text: str, top: str = "") -> dict[str, Any]:
+    """원문 토큰 가운데 SPEC(부록 제외)에 그대로 남은 비율과 빠진 목록."""
+    body = strip_prompt_appendix(spec_text)
+    toks = prompt_tokens(prompt_text, top)
+    missing = sorted(t for t in toks if not _token_present(t, body))
+    total = len(toks)
+    return {"total": total, "found": total - len(missing), "ratio": (total - len(missing)) / total if total else 1.0, "missing": missing}
+
+
+def named_registers(prompt_text: str, top: str = "") -> list[str]:
+    """원문이 이름 붙여 설명한 내부 레지스터·단 (숫자 접미 식별자: sum_2, exponent_3, sign_20). 포트 이름은 헤더가 따로 준다."""
+    return sorted({t for t in _NAMED_REG_RE.findall(prompt_text) if t != top and len(t) >= 3})
+
+
+def undefined_output_errors(spec_text: str, top_l1: dict) -> list[str]:
+    """5~7절에서 출력 포트 값을 미정의로 둔 요구사항. 리셋 없는 도메인의 첫 값 전 출력과 한쪽만 리셋했을 때는 예외다."""
+    from pipeline.spec.parse import parse
+
+    outs: list[str] = []
+    for p in top_l1.get("ports", []):
+        for sgl in (p["signals"] if "bundle" in p else [p]):
+            if sgl.get("dir") == "output":
+                outs.append(sgl["name"])
+    errs = []
+    for r in parse(spec_text).requirements:
+        if r.section not in (5, 6, 7) or r.level != "미정의" or _UNDEF_EXEMPT_RE.search(r.text):
+            continue
+        hit = [o for o in outs if re.search(rf"(?<![A-Za-z0-9_]){re.escape(o)}(?![A-Za-z0-9_])", r.text)]
+        if hit:
+            errs.append(f"[벤치 검사] UNDEFINED_OUTPUT {r.id}: 출력 {', '.join(hit)}의 값을 미정의로 둠. 채점은 모든 출력을 비교하므로 "
+                        "원문이 암시하는 기본값(선택 없음·미매핑은 0, 쓰기 조건 아니면 이전 값 유지, 예약 비트 0)을 (필수)로 정하고 "
+                        "근거를 10절 [LESSON]에 남긴다")
+    return errs
+
+
+def coverage_errors(prompt_text: str, spec_text: str, top: str, minimum: float = COVERAGE_MIN) -> list[str]:
+    cov = prompt_coverage(prompt_text, spec_text, top)
+    if cov["total"] < COVERAGE_MIN_TOKENS or cov["ratio"] >= minimum:
+        return []
+    shown = cov["missing"][:40]
+    more = f" 외 {len(cov['missing']) - len(shown)}개" if len(cov["missing"]) > len(shown) else ""
+    return [f"[벤치 검사] PROMPT_COVERAGE 원문 식별자·비트 범위·수치 {cov['found']}/{cov['total']} ({cov['ratio']:.0%})가 SPEC에 남음 "
+            f"(기준 {minimum:.0%}). 빠진 항목을 5절 디코드 표, 7절 경계 조건, 9절 필수 구조에 그대로 옮긴다: {', '.join(shown)}{more}"]
+
+
+def bench_spec_check(top_l1: dict, prompt_text: str, top: str):
+    """SpecWriter 종료 검사: 기존 spec_gate + 출력 미정의 금지(항상) + 원문 커버리지(첫 작성 뒤 한 번만 다시 쓰게 한다)."""
+    base = spec_writer.check(top_l1)
+    calls = [0]
+
+    def _check(work: Path) -> list[str]:
+        calls[0] += 1
+        errs = base(work)
+        p = work / OUT
+        if not p.exists():
+            return errs
+        text = p.read_text(encoding="utf-8")
+        errs += undefined_output_errors(text, top_l1)
+        if calls[0] == 1:
+            errs += coverage_errors(prompt_text, text, top)
+        return errs
+    return _check
+
+
+HEADER_OUT = "out/header.sv"
+HEADER_TASK = """\
+# 과제: 벤치마크 문제 {top}의 모듈 헤더 쓰기
+
+너는 RTL 생성 파이프라인의 HeaderWriter 에이전트다. 벤치마크 자연어 명세(`prompt.txt`)만 보고 모듈 `{top}`의 헤더
+(포트와 파라미터 선언만 있는 빈 모듈)를 `{out}`에 쓴다. 이 헤더가 테스트벤치가 인스턴스하는 인터페이스 계약이 된다.
+
+## 입력
+- `prompt.txt`: 벤치마크 원본 자연어 명세 (제공 문서가 있으면 뒤에 붙어 있다)
+- `cells/`: 제공된 재사용 하위 모듈 RTL (있을 때만). 상위 모듈의 포트는 명세가 말하는 대로 쓰고 하위 모듈 포트를 그대로 올리지 않는다
+
+## 할 일
+- `{out}`에 `module {top} #(파라미터) (포트); endmodule`만 쓴다 (ANSI 스타일, 본문 없음, `timescale·`include 없음).
+- 포트 이름, 방향, 폭, 순서와 파라미터 이름, 기본값은 명세의 인터페이스 표, 포트 목록, 신호 설명을 그대로 따른다.
+  이름을 바꾸거나 줄이거나 더하지 않는다. 명세가 말하지 않는 포트(디버그, 선택 사항)는 더하지 않는다.
+- 폭이 파라미터로 주어지면 `[WIDTH-1:0]`처럼 파라미터 식으로 쓴다. 명세가 폭을 말하지 않는 1비트 신호는 폭 없이 쓴다.
+- `input [7:0] a`, `output reg [7:0] b`처럼 Verilog-2001 문법으로 쓴다 (채점기는 Icarus Verilog다). `logic`은 쓰지 않는다.
+- 두 가지로 읽히는 부분은 `endmodule` 뒤 주석 `// Q: ...`으로 남긴다.
+
+## 규칙
+- `{out}` 외의 파일은 만들거나 고치지 않는다.
+"""
+
+
+def header_check(top: str):
+    def _check(work: Path) -> list[str]:
+        text = (work / HEADER_OUT).read_text(encoding="utf-8", errors="replace")
+        errs: list[str] = []
+        if re.search(r"^\s*(always|assign|initial)\b", text, re.M):
+            errs.append("헤더에 본문(always/assign/initial)이 있음: 포트와 파라미터 선언만 쓴다")
+        tree = pyslang.SyntaxTree.fromText(text)
+        comp = pyslang.Compilation()
+        comp.addSyntaxTree(tree)
+        diags = [d for d in comp.getAllDiagnostics() if d.isError()]
+        if diags:
+            errs.append("헤더가 파싱되지 않음: " + "; ".join(str(d.code) for d in diags[:3]))
+        tops = [i for i in comp.getRoot().topInstances if i.name == top]
+        if not tops:
+            errs.append(f"모듈 이름이 {top!r}가 아님")
+        elif not [p for p in tops[0].body.portList if p.kind == pyslang.SymbolKind.Port]:
+            errs.append("포트가 하나도 없음")
+        return errs
+    return _check
+
+
+def ensure_header(item: BenchItem, work_dir: Path, roles: roles_mod.Roles, isolate: bool = True) -> TaskResult | None:
+    """헤더가 없는 문제(CVDP)는 HeaderWriter 에이전트가 프롬프트만 보고 헤더를 쓴다. 한 번 쓴 헤더는 work_dir에 남겨 다시 쓰지 않는다.
+    테스트벤치(채점 기준)는 공식 설정대로 헤더 작성에 쓰지 않는다."""
+    if item.header_sv.strip():
+        return None
+    out = Path(work_dir).resolve() / "header_writer" / "header.sv"
+    if out.exists():
+        item.header_sv = str(out)
+        return None
+    inputs: dict[str, str | Path] = {"prompt.txt": item.prompt_text}
+    for c in item.cells:
+        if Path(c).exists():
+            inputs[f"cells/{Path(c).name}"] = Path(c)
+    task = Task("spec_writer", f"bench_header/{item.id}", HEADER_TASK.format(top=item.top, out=HEADER_OUT), inputs=inputs,
+                outputs=[HEADER_OUT], write_scope=["out/"], tools=False)
+    task.isolate = isolate
+    cfg = roles.agents.get("spec_writer") or roles.agents.get("verifier")
+    if isolate:
+        from pipeline.agents.task import RUNS
+        import hashlib
+        key = hashlib.sha256(str(out).encode()).hexdigest()[:8]
+        agent_work, run_root = RUNS / f"bench-header-{item.id}-{key}", RUNS
+    else:
+        agent_work, run_root = out.parent / "agent_work", None
+    res = run_task(cfg, task, agent_work, check=header_check(item.top), retries=roles.limits.get("agent_retries", 2), run_root=run_root)
+    if not res.ok:
+        raise RuntimeError(f"헤더 작성 실패: {res.errors[:3]}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(Path(res.outputs[HEADER_OUT]).read_text(encoding="utf-8"), encoding="utf-8")
+    item.header_sv = str(out)
+    return res
+
+
 def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]:
     """모듈 헤더 SV와 프롬프트에서 Block Top L1과 2~4절 마크다운 표(`tables.md`), `notes.json`을 결정론적으로 추출한다."""
     work_dir = Path(work_dir)
@@ -410,10 +653,16 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
     raw_text = _read_header_text(item.header_sv)
     lessons: list[str] = []
     clean_hdr = strip_to_header(raw_text, item.top, lessons)
-    (work_dir / "header.sv").write_text(clean_hdr, encoding="utf-8")
-
     incdirs = [Path(p).resolve() for p in item.incdirs]
     cells = [Path(p).resolve() for p in item.cells if Path(p).exists()]
+    # 제공 셀에 `timescale이 있는데 헤더에 없으면 slang이 MissingTimeScale로 거부한다 (CVDP gcd): 셀의 지시문을 헤더 앞에 둔다
+    if "`timescale" not in clean_hdr:
+        for c in cells:
+            if m := re.search(r"^\s*`timescale\b.*$", c.read_text(encoding="utf-8", errors="replace"), re.M):
+                clean_hdr = m.group(0).strip() + "\n" + clean_hdr
+                break
+    (work_dir / "header.sv").write_text(clean_hdr, encoding="utf-8")
+
     # 클럭 에지·리셋 극성/동기는 프롬프트와 헤더로만 정한다. 정답 RTL(reference_rtl)에서 힌트를 뽑지 않는다 (엔진 간 공정 비교)
     aug_file = _inject_dummy_seq_if_empty(clean_hdr, item.top, item.prompt_text, incdirs, item.defines, item.params, work_dir, lessons=lessons)
 
@@ -489,6 +738,11 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
     if depth and fixed_latency:
         lessons.append(f"지연 추정: prompt.txt가 고정 지연이라 하지만 지연 수가 없어 {depth_why}로 파이프라인 깊이를 최소 {depth}단으로 보았다. "
                        f"6절 지연은 이 값을 기준으로 쓰되 사용자가 확인해야 한다.")
+    cfg_macros = config_macros(item.prompt_text, incdirs, item.defines, raw_text)
+    if cfg_macros["undefined"]:
+        lessons.append(f"구성 매크로: prompt.txt가 말하는 {', '.join(cfg_macros['undefined'])}은(는) 제공 include에 정의되어 있지 않다"
+                       "(주석 처리됨). 채점 정답은 이 매크로 없이 컴파일되므로 정의되지 않은 쪽 구성을 구현 대상으로 삼고 "
+                       "정의된 쪽 동작은 범위 밖에 둔다.")
     notes = {
         "benchmark": item.benchmark,
         "id": item.id,
@@ -499,6 +753,9 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
         "cells": [Path(c).name for c in item.cells],
         "param_conflicts": conflicts,
         "stage_depth_hint": depth if fixed_latency else None,
+        "config_macros": cfg_macros,
+        "figures": [Path(f).name for f in item.attachments],
+        "named_registers": named_registers(item.prompt_text, item.top),
         "lessons": list(dict.fromkeys(lessons)),
     }
     (work_dir / "top.l1.json").write_text(json.dumps(top_l1, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -516,6 +773,9 @@ def make_bench_spec_task(item: BenchItem, tables: str, header_text: str, notes: 
         "header.sv": header_text,
         "notes.json": json.dumps(notes, ensure_ascii=False, indent=2),
     }
+    for f in item.attachments:   # 명세가 참조하는 그림 (prompt.txt의 ./figures/<이름> 경로와 맞춘다)
+        if Path(f).exists():
+            inputs[f"figures/{Path(f).name}"] = Path(f)
     text = BENCH_SPEC_TASK.format(top=item.top, out=OUT)
     return Task("spec_writer", f"bench_spec/{item.id}", text, inputs=inputs, outputs=[OUT], write_scope=["out/"])
 
@@ -523,6 +783,7 @@ def make_bench_spec_task(item: BenchItem, tables: str, header_text: str, notes: 
 def generate_spec(item: BenchItem, work_dir: Path, roles: roles_mod.Roles, isolate: bool = True) -> tuple[Path | None, list[str], TaskResult]:
     """BenchItem에서 L1 추출 → BenchSpecWriter 실행 → spec_gate 검증을 거쳐 고정된 spec.md를 생성한다."""
     work_dir = Path(work_dir).resolve()
+    header_res = ensure_header(item, work_dir, roles, isolate=isolate)
     top_l1, tables, notes = extract_header_l1(item, work_dir / "l1_extract")
     header_text = (work_dir / "l1_extract" / "header.sv").read_text(encoding="utf-8")
 
@@ -539,11 +800,15 @@ def generate_spec(item: BenchItem, work_dir: Path, roles: roles_mod.Roles, isola
         agent_work = work_dir / "spec_writer_work"
         run_root = None
 
-    res = run_task(cfg, task, agent_work, check=spec_writer.check(top_l1), retries=roles.limits.get("agent_retries", 2), run_root=run_root)
+    res = run_task(cfg, task, agent_work, check=bench_spec_check(top_l1, item.prompt_text, item.top),
+                   retries=roles.limits.get("agent_retries", 2), run_root=run_root)
+    if header_res is not None:
+        res.attempts += header_res.attempts
     if not res.ok:
         return None, res.errors, res
 
     spec_out = work_dir / "spec.md"
-    spec_out.write_text(Path(res.outputs[OUT]).read_text(encoding="utf-8"), encoding="utf-8")
-    gate_errs = spec_writer.gate(spec_out, top_l1)
+    # 원문 전문을 부록으로 붙여 Architect·Author·Verifier·Repair가 SPEC에서 빠진 세부를 원문에서 찾을 수 있게 한다
+    spec_out.write_text(with_prompt_appendix(Path(res.outputs[OUT]).read_text(encoding="utf-8"), item.prompt_text), encoding="utf-8")
+    gate_errs = spec_writer.gate(spec_out, top_l1) + undefined_output_errors(spec_out.read_text(encoding="utf-8"), top_l1)
     return (spec_out if not gate_errs else None), gate_errs, res

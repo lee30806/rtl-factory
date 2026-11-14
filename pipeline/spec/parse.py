@@ -18,6 +18,7 @@ TEMPLATE = {1: "목적과 범위", 2: "클럭, 리셋, 전력", 3: "인터페이
             6: "타이밍과 성능", 7: "예외와 코너 케이스", 8: "예시 시나리오", 9: "구현 제약", 10: "열린 질문"}
 REQ_ID = r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z]?\d+"
 _SEC = re.compile(r"^##\s+(\d+)\.\s+(.+?)\s*$")
+_APPENDIX = re.compile(r"^##\s+부록\b")   # 이 아래는 원문 명세 등 부록이다. 섹션·요구사항·표로 읽지 않는다
 _SUB = re.compile(r"^###\s+(.+?)\s*$")
 _REQ = re.compile(rf"^-\s+({REQ_ID})\s+(?:\((필수|권장|허용)\)\s+|(미정의):\s*)?(.*)$")
 _Q = re.compile(r"^-\s+(Q-\d+)\s+(.*)$")
@@ -110,6 +111,8 @@ def parse(text: str, path: Path | None = None) -> Spec:
     i = 0
     while i < len(lines):
         ln, no = lines[i], i + 1
+        if _APPENDIX.match(ln):
+            break
         m = _SEC.match(ln)
         if m:
             cur = Section(int(m.group(1)), m.group(2), no)
