@@ -156,7 +156,7 @@ def run_task(cfg: AgentConfig, task: Task, work: Path, check: Callable[[Path], l
             restore(task, work, before, exclude)
         runs.append({"attempt": attempts, "returncode": r.returncode, "timed_out": r.timed_out,
                      "duration_s": round(r.duration_s, 1), "stdout_tail": r.stdout_tail[-1500:],
-                     "stderr_tail": r.stderr_tail[-1500:], "errors": errors[:20]})
+                     "stderr_tail": r.stderr_tail[-1500:], "errors": errors[:20], **({"usage": r.usage} if r.usage else {})})
         if not errors:
             break
         text = task.text + RETRY.format(n=attempts, errors="\n".join(f"- {e}" for e in errors[:20]))

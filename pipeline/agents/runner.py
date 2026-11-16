@@ -55,6 +55,7 @@ class AgentRun:
     duration_s: float
     stdout_tail: str
     stderr_tail: str
+    usage: dict = field(default_factory=dict)
 
     @property
     def exit_ok(self) -> bool:
@@ -110,7 +111,29 @@ def run_agent(cfg: AgentConfig, workdir: Path, task: str, extra: dict[str, str] 
         err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
     except FileNotFoundError as e:
         rc, timed_out, out, err = 127, False, "", str(e)
-    return AgentRun(rc, timed_out, time.monotonic() - t0, out[-4000:], err[-4000:])
+    return AgentRun(rc, timed_out, time.monotonic() - t0, out[-4000:], err[-4000:], parse_usage(out))
+
+
+USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def parse_usage(stdout: str) -> dict:
+    """에이전트 CLI가 JSON 결과를 내면(claude `--output-format json`) 토큰 사용량을 꺼낸다. 텍스트 출력이면 빈 dict.
+    비교 실험에서 엔진 간 비용을 맞추는 데 쓴다 (PAPER_EVAL_PLAN D9)."""
+    text = stdout.strip()
+    if not text.startswith("{"):
+        return {}
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return {}
+    u = obj.get("usage") if isinstance(obj, dict) else None
+    if not isinstance(u, dict):
+        return {}
+    out = {k: int(u[k]) for k in USAGE_KEYS if isinstance(u.get(k), (int, float))}
+    if isinstance(obj.get("total_cost_usd"), (int, float)):
+        out["cost_usd"] = float(obj["total_cost_usd"])
+    return out
 
 
 # 에이전트가 시뮬레이터를 돌리면 생기는 빌드 산출물. 결과로 가져가지 않으므로 쓰기 범위 검사에서 뺀다

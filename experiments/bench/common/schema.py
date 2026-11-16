@@ -94,6 +94,7 @@ class BenchResult:
     sim_model: bool = False                              # 시뮬레이션 모델 경로로 처리함 (합성, PPA 없음)
     round_trip: list[dict[str, Any]] = field(default_factory=list)   # B5: R6 회차별 재생성 상태, 원본 비교, 판정, 등가 채점
     lessons: list[str] = field(default_factory=list)     # 헤더 추출이 찾은, 사람이 확인할 결함 (헤더 지시문, 리셋 판정 충돌)
+    tokens: dict[str, Any] = field(default_factory=dict)  # 에이전트 토큰 사용량 합계 (CLI가 JSON 결과를 낼 때만. runner.parse_usage)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

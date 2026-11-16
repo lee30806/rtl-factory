@@ -73,6 +73,9 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
         },
         "avg_agent_runs": round(sum(r.agent_runs for r in results) / total, 2),
         "avg_minutes": round(sum(r.minutes for r in results) / total, 2),
+        # 토큰은 CLI가 JSON 결과를 낸 실행만 센다 (claude `--output-format json`). 없으면 0
+        "tokens_total": {k: sum(int(r.tokens.get(k, 0)) for r in results)
+                         for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "runs_with_usage")},
         "auto_approvals_total": sum(len(r.auto_approvals) for r in results),
         "by_lang": by_lang,
         "items": [r.to_dict() for r in results],

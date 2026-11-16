@@ -17,7 +17,9 @@
         "",
         "--strict-mcp-config",
         "--disable-slash-commands",
-        "--no-session-persistence"
+        "--no-session-persistence",
+        "--output-format",
+        "json"
       ],
       "model": "sonnet",
       "env": {},
@@ -42,7 +44,9 @@
         "",
         "--strict-mcp-config",
         "--disable-slash-commands",
-        "--no-session-persistence"
+        "--no-session-persistence",
+        "--output-format",
+        "json"
       ],
       "model": "sonnet",
       "env": {},

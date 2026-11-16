@@ -155,13 +155,26 @@ def revise_spec(item: BenchItem, work_dir: Path, trigger: str, spec_path: Path, 
     return (out if not errs else None), changes, errs, res
 
 
+_TB_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_TB_FAIL_TOKEN = re.compile(r"fail|error|mismatch|wrong|incorrect", re.I)
+
+
+def tb_is_self_checking(text: str) -> bool:
+    """공식 도구(`formal_equivalence.tb_is_self_checking`)와 같은 규칙: 주석을 뺀 문자열 상수 중 하나라도 실패 판정을 말할 수 있으면 자체 검사 TB.
+    출력만 하는 TB는 공식 채점이 판정에 쓰지 않고 등가 검사로 넘어가므로, 그 TB의 결과는 Repair·SPEC 보정의 근거가 되지 못한다."""
+    text = re.sub(r"//.*", "", re.sub(r"/\*.*?\*/", "", text, flags=re.S))
+    return any(_TB_FAIL_TOKEN.search(s) for s in _TB_STRING.findall(text))
+
+
 def chipverilog_tb_files(item: BenchItem) -> list[Path]:
-    """ChipVerilog 공식 채점이 쓰는 자체 검사 TB (정답 디렉터리의 *TB*.v / *tb*.v). 정답 RTL은 제외. 없으면 등가 채점만 하는 문제."""
+    """ChipVerilog 공식 채점이 판정에 쓰는 자체 검사 TB (정답 디렉터리의 *TB*.v / *tb*.v). 정답 RTL과 출력만 하는 TB는 제외.
+    없으면 등가 채점만 하는 문제."""
     if item.eval.kind != "chipverilog" or not item.reference_rtl:
         return []
     des = Path(item.reference_rtl[0]).parent
     ref = {Path(p).resolve().name for p in item.reference_rtl}
-    return sorted(f for f in des.glob("*.v") if f.name not in ref and re.search(r"tb|test", f.name, re.I))
+    return sorted(f for f in des.glob("*.v") if f.name not in ref and re.search(r"tb|test", f.name, re.I)
+                  and tb_is_self_checking(f.read_text(encoding="utf-8", errors="replace")))
 
 
 def tb_bundle(item: BenchItem, dst: Path, prepare) -> Path:

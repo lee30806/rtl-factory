@@ -18,7 +18,25 @@ TEMPLATE = ROOT / "docs" / "SPEC 작성 템플릿.md"
 OUT = "out/spec.md"
 
 CLK_RE = re.compile(r"(?:^|_|w|r)(clk|clock)(?:$|_|\d|[a-z])", re.I)
-RST_RE = re.compile(r"(?:^|_|w|r|a|b)(a?rst_?n?|a?reset_?n?|clr|clear)(?:$|_|\d)", re.I)
+RST_RE = re.compile(r"(?:^|_|w|r|a|b|n)(a?rst_?n?|a?reset_?n?|clr|clear)(?:$|_|\d)", re.I)
+
+
+def port_line(prompt_text: str, port: str) -> str:
+    """프롬프트의 포트 설명 줄 (`    nReset: Asynchronous active-low reset. ...`). ChipVerilog·RTLLM 원문의 포트 절 형식. 없으면 ""."""
+    m = re.search(rf"^[ \t]*(?:(?:input|output|inout)\s+)?(?:reg\s+|wire\s+)?{re.escape(port)}\s*(?:\[[^\]]*\])?\s*:\s*(.+)$",
+                  prompt_text, re.M)
+    return m.group(1) if m else ""
+
+
+def port_reset_traits(prompt_text: str, port: str) -> tuple[str | None, bool | None]:
+    """포트 설명 줄이 말하는 리셋 (극성, 비동기 여부). 말하지 않으면 None. 리셋이 둘인 블록(동기 rst + 비동기 nReset)에서
+    문서 전체의 "asynchronous" 문구가 다른 리셋에 붙는 것을 막는다 (ChipVerilog i2c)."""
+    ln = port_line(prompt_text, port).lower()
+    if not ln:
+        return None, None
+    active = "low" if re.search(r"active[- ]low|low[- ]active", ln) else ("high" if re.search(r"active[- ]high|high[- ]active", ln) else None)
+    is_async = True if re.search(r"\basynchronous", ln) else (False if re.search(r"\bsynchronous", ln) else None)
+    return active, is_async
 
 BENCH_SPEC_TASK = """\
 # 과제: 벤치마크 문제 {top}의 10개 섹션 SPEC 쓰기
@@ -33,7 +51,7 @@ BENCH_SPEC_TASK = """\
 - `prompt.txt`: 벤치마크 원본 자연어 명세 전문
 - `header.sv`: 포트와 파라미터가 선언된 모듈 헤더
 - `notes.json`: 고정 파라미터, 매크로 상수, 재사용 하위 셀 정보, 제공 include에 정의되지 않은 구성 매크로(`config_macros`),
-  원문이 이름을 붙여 설명한 내부 레지스터·단(`named_registers`)
+  원문이 이름을 붙여 설명한 내부 레지스터·단(`named_registers`), 원문이 이름을 말한 하위 모듈 인스턴스(`named_instances`)
 - `figures/`: `prompt.txt`가 `![](./figures/...)`로 참조하는 그림 (있을 때만). 블록도, FSM 상태 전이도, 타이밍도다. Read 도구로 열어 보고
   상태 이름, 전이 조건, 신호 순서처럼 그림에만 있는 정보를 5~8절에 글로 옮긴다. 그림을 보지 않고 그 부분을 비워 두지 않는다.
 
@@ -50,14 +68,12 @@ BENCH_SPEC_TASK = """\
 - 1절 (`## 1. 목적과 범위`): 모듈의 목적을 한 문단으로 설명하고, 범위 밖 항목을 명시한다.
   - **동작 흐름 소절:** `prompt.txt`에 처리 순서 서술(Processing Flow, 동작 개요, 단계별 설명)이 있으면 1절 끝에 `### 동작 흐름`
     소절을 두고 그 서술을 요약하지 않고 옮긴다 (문장 수 제한 없음). 5~7절 요구사항의 근거 문맥이 되어 Author가 해석할 여지를 줄인다.
-  - **파라미터 값이 본문 수치보다 우선한다:** `header.sv`의 파라미터 기본값(예: DEPTH = 16)과 `prompt.txt` 본문의 구체 수치(예: "깊이 8",
-    "4비트 포인터", "하위 3비트 주소")가 어긋나면 파라미터 값을 따른다. 테스트벤치는 헤더로 인스턴스하므로 파라미터가 실제 계약이고,
+  - **파라미터 값이 본문 수치보다 우선한다:** `header.sv`의 파라미터 기본값과 `prompt.txt` 본문의 구체 수치(깊이, 포인터 폭, 주소 비트 수)가 어긋나면 파라미터 값을 따른다. 테스트벤치는 헤더로 인스턴스하므로 파라미터가 실제 계약이고,
     본문 수치는 다른 설정의 예시로 읽는다. 포인터 폭·주소 폭처럼 파라미터에서 유도되는 수는 파라미터 값으로 다시 계산해 5·7·9절에 쓴다
     (`notes.json`의 `param_conflicts`가 찾은 충돌이다). 충돌 사실과 택한 값은 10절에 `- Q-xx [LESSON] ...`으로 남긴다.
   - **구성 매크로는 제공 include의 정의 여부를 따른다:** `prompt.txt`가 "X가 정의되면(활성화되면) ... 정의되지 않으면 ..."처럼
     매크로로 갈리는 두 구성을 설명하고 `notes.json`의 `config_macros.undefined`에 그 매크로가 있으면, 정의되지 않은 쪽 구성을 구현
-    대상으로 삼는다. 채점은 제공 include로 컴파일한 정답과 비교하므로 정의된 쪽을 고르면 맞는 설계가 실패한다 (or1200_sb:
-    OR1200_SB_IMPLEMENTED이 주석 처리되어 정답은 FIFO 없는 통과 경로다). 정의되지 않은 쪽이 단순 통과(pass-through)라도 그대로 쓰고,
+    대상으로 삼는다. 채점은 제공 include로 컴파일한 정답과 비교하므로 정의된 쪽을 고르면 맞는 설계가 실패한다. 정의되지 않은 쪽이 단순 통과(pass-through)라도 그대로 쓰고,
     정의된 쪽 동작은 1절 범위 밖에 적으며 10절에 `- Q-xx [LESSON] ...`으로 남긴다. 두 구성 중 무엇을 골랐는지 9절 필수 구조에도 적는다.
 - 5절 (`## 5. 기능 요구사항`): `- REQ-01 (필수) ...` 형식으로 모든 출력 포트와 입력 포트가 최소 한 번 이상 등장하도록
   동작을 구체적인 수치·조건·타이밍으로 기술한다.
@@ -65,15 +81,15 @@ BENCH_SPEC_TASK = """\
     5~7절 요구사항 문장에 최소 한 번 이상 그대로 적혀야 하며, 모든 출력 포트의 구동 조건과 값이 정의되어야 한다.
   - **한 문장 규칙:** 각 요구사항 ID 줄(`- ID (필수) ...`)에는 마침표로 끝나는 **문장 하나만** 쓴다 (두 문장 이상 쓰면 `REQ_MULTI` 경고가 발생함).
   - **디코드 표 허용:** 주소 맵, 레지스터 비트 맵, 명령·상태 비트, 연산 코드 분기, FSM 상태 전이처럼 조건이 여럿인 내용은 한 문장으로
-    뭉개지 않는다. `- FR-RD-02 (필수) wb_adr_i에 따른 wb_dat_o는 아래 표를 따른다.` 한 줄을 쓰고 바로 아래에 `| 조건 | 출력 |` 마크다운 표를
+    뭉개지 않는다. `- FR-RD-02 (필수) <선택 입력>에 따른 <출력>은 아래 표를 따른다.` 한 줄을 쓰고 바로 아래에 `| 조건 | 출력 |` 마크다운 표를
     둔다. 표의 행은 그 요구사항의 일부이며, 원문의 모든 경우(값, 비트 위치, 기본 분기)를 행 하나씩 그대로 옮긴다. 표 칸의 포트 이름도
     `spec_gate` 포트 참조로 인정된다. 원문이 표로 준 것은 표로 옮긴다.
   - **출력 미정의 금지 (벤치 검사 `UNDEFINED_OUTPUT`):** 출력 포트의 값을 `- ID 미정의: ...`로 두지 않는다. 채점은 모든 출력을 비교하므로
     미정의는 실패와 같다. 원문이 어떤 경우의 출력을 말하지 않으면 원문이 암시하는 기본값을 (필수)로 정한다:
-    여러 소스 중 하나를 고르는 읽기 다중화에서 아무것도 선택되지 않으면 0 (예: "MTSR이면 0, 그 외 선택된 그룹 값"이면 미사용 그룹도 0);
+    여러 소스 중 하나를 고르는 읽기 다중화에서 아무것도 선택되지 않으면 0;
     데이터를 고르거나 확장하는 변환 경로(바이트·반워드 선택, 부호 확장, 정렬)에서 어떤 변환도 해당하지 않으면 데이터를 그대로 통과
-    (가장 넓은 접근과 같은 결과, or1200_mem2reg: 적재가 아닌 lsu_op에서 regdata=memdata), 0이 아니다; 쓰기 조건이 아닌 사이클의 레지스터는
-    이전 값 유지; 예약 비트는 0 읽힘. 원문이 연산 코드의 일부 비트만 쓴다고 하거나(`lsu_op[2:0]`) 코드 표의 상위 비트가 구분에 쓰이지 않으면
+    (가장 넓은 접근과 같은 결과), 0이 아니다; 쓰기 조건이 아닌 사이클의 레지스터는
+    이전 값 유지; 예약 비트는 0 읽힘. 원문이 연산 코드의 일부 비트만 쓴다고 하거나 코드 표의 상위 비트가 구분에 쓰이지 않으면
     디코드도 그 비트만 본다. 정한 값과 근거는 10절에 `- Q-xx [LESSON] ...`으로 남긴다. 예외는 리셋이 없는 도메인의 첫 값 전
     출력(`INIT_NO_RESET`)과 한 도메인만 리셋했을 때(`MULTI_RESET_USAGE`)뿐이다.
   - **프롬프트 충실성 규칙:** `prompt.txt`에 적히지 않은 리셋 해제 직후 첫 사이클 특수 동작(예: 리셋 중의 값을 첫 입력 비트로 간주할지 여부 등)을 임의로 지어내어 필수 요구사항으로 강제하지 않는다. 리셋 해제 후에는 명시적으로 인가된 입력 시퀀스에 대해서만 출력을 규정한다.
@@ -81,29 +97,26 @@ BENCH_SPEC_TASK = """\
     만드는 레지스터 구성, 카운터 값에 따른 출력 토글 시점처럼 출력 타이밍을 정하는 구조를 명시하면, 표준 관행과 달라도 그 단 수와
     지연, 위상을 5절, 6절, 9절 필수 요구사항에 그대로 쓴다. 이런 설계는 사이클 단위 기대값으로 검증되므로 "더 나은" 구조로 바꾸면
     맞는 설계가 실패한다. 그리고 10절에 `- Q-01 [SPEC 재검토 알람] ...` 형식으로 표준과 다른 점과 그 영향을 적어 사람이 다시 보게 한다.
-  - **구조가 정하는 플래그 지연은 7절 수치와 맞춘다 (템플릿 6절 규칙):** `prompt.txt`가 명시한 구조(예: 그레이 포인터를 이진 포인터보다
-    한 에지 늦게 래치, 플래그는 포인터의 조합 비교)에서 플래그가 실제로 서는 시점과 그때까지 받히는 개수를 계산해 6절과 7절에 그대로 쓴다:
-    "wfull은 16번째 쓰기의 다음 wclk 에지에 1이 되고 그 사이 쓰기 한 번이 더 받힐 수 있다"처럼. "DEPTH개가 차면 wfull=1이고 그때 쓰기는
-    무시된다"처럼 구조와 맞지 않는 이상적 수치를 7절에 쓰지 않는다. 두 문장이 서로 맞지 않으면 구조를 따르고 수치를 고친 뒤 10절에
+  - **구조가 정하는 플래그 지연은 7절 수치와 맞춘다 (템플릿 6절 규칙):** `prompt.txt`가 명시한 레지스터 구성에서
+    상태 플래그가 실제로 서는 시점과 그때까지 받히는 개수를 계산해 6절과 7절에 그대로 쓴다. 구조와 맞지 않는 이상적 수치
+    ("N개가 차면 즉시 플래그가 서고 그때 입력은 무시된다")를 7절에 쓰지 않는다. 두 문장이 서로 맞지 않으면 구조를 따르고 수치를 고친 뒤 10절에
     `- Q-xx [SPEC 재검토 알람] ...`으로 남긴다. 외부 기준 TB는 명시된 구조의 사이클 동작을 기대값으로 쓴다.
-  - **비동기 FIFO / CDC 포인터 및 상태 플래그 규칙:** 비동기 FIFO(`asyn_fifo`)나 복수 클럭 도메인 간의 CDC(Clock Domain Crossing) 설계에서, 2단 동기화기(2-stage synchronizer, 예: `rptr_syn`, `wptr_syn`)를 통과한 신호는 이미 해당 수신 클럭 도메인에 안전하게 동기화된 신호이다.
-    따라서 수신 도메인의 로컬 포인터(`wptr`, `rptr`)와 2단 동기화된 상대 포인터를 비교하여 가득 참(`wfull`) 및 비어 있음(`rempty`) 플래그를 생성할 때는 추가 플립플롭 없이 **순수 조합논리 비교(`output wire wfull; assign wfull = ...;`)**로 구동하는 것이 표준이다. 동기화된 신호 간의 조합논리 플래그 생성을 "비동기 직접 비교 글리치 유발"로 간주하여 임의로 금지하거나 플래그에 불필요한 레지스터(`wfull_reg`, `rempty_reg`)를 추가하지 않는다.
 - 6절 (`## 6. 타이밍과 성능`): `- TIM-01 (필수) ...` 형식으로 클럭 에지 기준 출력 갱신 지연과 처리율을 한 줄에 한 문장씩 명시한다.
-  - **지연을 지어내지 않으며 파이프라인 단 수를 보존한다:** `prompt.txt`에 없는 정확한 지연 사이클 수, 핸드셰이크 응답 사이클, 사이클 번호를 정하지 않는다. 단, `prompt.txt`가 구체적인 파이프라인/포인터 레지스터 구성을 명시해 지연 사이클 수가 결정되는 경우(예: 바이너리 주소 레지스터 갱신 후 그레이 레지스터 래치)에는 그 구성을 그대로 반영하며, 임의로 선행 계산(lookahead next-state)을 도입하여 파이프라인 지연을 1사이클 앞당기지 않는다.
+  - **지연을 지어내지 않으며 파이프라인 단 수를 보존한다:** `prompt.txt`에 없는 정확한 지연 사이클 수, 핸드셰이크 응답 사이클, 사이클 번호를 정하지 않는다. 단, `prompt.txt`가 구체적인 파이프라인/포인터 레지스터 구성을 명시해 지연 사이클 수가 결정되는 경우에는 그 구성을 그대로 반영하며, 임의로 선행 계산(lookahead next-state)을 도입하여 파이프라인 지연을 1사이클 앞당기지 않는다.
     벤치마크 테스트벤치는 사이클 단위(cycle-accurate)로 기대값 벡터와 엄격하게 대조 검증하므로, 프롬프트가 구체적 레지스터 구성을 명시한 경우 "전달 지연은 구현에 따름(검증하지 않음)"과 같은 비검증 면책 문구를 임의로 남발하지 않는다.
     결과를 알리는 출력 플래그(예: `o_en`, `valid`, `done`, `rdy`)가 있고 `prompt.txt`가 지연 단 수를 강제하지 않으면 "o_en=1인 사이클의 result는 그 전에 i_en=1로 받은 입력들의
     결과를 받은 순서대로 낸다"처럼 플래그 기준으로 쓰고, 지연은 "구현에 따름(검증하지 않음)"으로 둔다. "여러 단의 레지스터"처럼
     수를 정하지 않은 표현을 특정 사이클 수로 바꾸지 않는다: 지어낸 값은 그와 다른 지연을 가진 맞는 설계를 실패시킨다.
   - **고정 지연이라고 말한 설계는 지연을 정한다 (템플릿 6절 규칙):** `prompt.txt`가 고정 지연(fixed latency, fixed-latency pipeline)이라고
-    말하면 "구현에 따름"으로 두지 않는다. 지연 수가 적혀 있으면 그 값을, 없으면 단 번호가 붙은 레지스터 나열(예: sign_1 ~ sign_20)이나
+    말하면 "구현에 따름"으로 두지 않는다. 지연 수가 적혀 있으면 그 값을, 없으면 단 번호가 붙은 레지스터 나열(`<이름>_1` ~ `<이름>_N`)이나
     "N단 파이프라인"에서 가장 큰 단 번호를 지연 사이클 수로 쓴다 (`notes.json`의 `stage_depth_hint`가 이 값이다). 구조에서 읽어낸 값은
     추정이므로 10절에 `- Q-xx [LESSON] ...`으로 근거와 함께 남긴다.
 - 7절 (`## 7. 예외와 코너 케이스`): `- EXC-01 (필수) ...` 형식으로 리셋 인가 시 모든 출력 포트의 초기값과 경계 조건 동작을 한 줄에 한 문장씩 명시한다.
   - 아래 시뮬레이션 모델이 아닐 때, `tables.md` 2절에서 리셋 포트가 `없음`인 도메인의 출력에는 초기값(시뮬레이션 시작 값)을 쓰지 않는다. `prompt.txt`가 initial 문이나
     초기값을 말해도 그렇다: 파이프라인은 initial 문을 쓸 수 없어 보장할 수 없다. 첫 값이 정해지기 전의 출력은 `- EXC-02 미정의: ...` 형식으로 쓴다
     (spec_gate `INIT_NO_RESET` 오류).
-  - `tables.md` 2절에서 리셋 동기가 `동기`인 도메인은 "리셋이 걸린 그 사이클"이 아니라 "리셋 신호를 본 다음 사이클부터 출력이 초기화된다"라고 쓴다. 반면 리셋 동기가 `비동기`이거나 리셋 포트가 `wrstn`, `rrstn`, `arstn` 또는 `~wrstn`처럼 비동기 리셋인 도메인은 "리셋 신호가 인가되는 즉시(비동기적으로) 해당 출력/레지스터가 초기화된다"로 명세하며, "다음 사이클부터"라고 왜곡하지 않는다.
-  - `tables.md` 2절에 서로 다른 클럭의 리셋 포트가 2개 이상(예: `wrstn`, `rrstn` 또는 `arstn`, `brstn`) 있으면, 모든 리셋 포트 이름을 한 문장에 넣어 "모든 리셋(<포트 이름들>)을 함께, 가장 느린 클럭 4사이클 이상 건다."라는 필수 요구사항 문장과 한쪽만 리셋했을 때의 미정의 문장(`- EXC-02 미정의: ...` 형식)을 반드시 포함한다.
+  - `tables.md` 2절에서 리셋 동기가 `동기`인 도메인은 "리셋이 걸린 그 사이클"이 아니라 "리셋 신호를 본 다음 사이클부터 출력이 초기화된다"라고 쓴다. 반면 리셋 동기가 `비동기`인 도메인은 "리셋 신호가 인가되는 즉시(비동기적으로) 해당 출력/레지스터가 초기화된다"로 명세하며, "다음 사이클부터"라고 왜곡하지 않는다.
+  - `tables.md` 2절에 서로 다른 클럭의 리셋 포트가 2개 이상 있으면, 모든 리셋 포트 이름을 한 문장에 넣어 "모든 리셋(<포트 이름들>)을 함께, 가장 느린 클럭 4사이클 이상 건다."라는 필수 요구사항 문장과 한쪽만 리셋했을 때의 미정의 문장(`- EXC-02 미정의: ...` 형식)을 반드시 포함한다.
 - **조합 블록:** `tables.md` 2절이 도메인 "없음", 도메인 간 관계 "조합 블록"인 행 하나뿐이면 클럭과 리셋이 없는 조합 블록이다.
   6절에는 클럭 지연 대신 "출력은 레지스터를 거치지 않는 입력의 조합 함수다." 같은 문장을 쓰고, 7절에는 리셋 문장 없이
   경계 입력(최댓값, 0, 넘침, 0으로 나누기 등)의 출력만 쓴다. 사이클, 클럭 에지, 리셋, 초기값이라는 말을 쓰지 않는다.
@@ -117,13 +130,15 @@ BENCH_SPEC_TASK = """\
     `#### 원문 명시 레지스터와 단 구성` 소절을 두고, 원문이 이름 붙인 내부 레지스터·중간 신호·파이프라인 단을 **하나도 빼지 않고**
     `- <이름>: <원문이 말한 역할과 갱신 조건, 속한 단>` 형식으로 옮긴다. 등가 채점은 이 구성이 만드는 사이클 동작을 그대로 기대하므로
     "내부 구현은 자유"로 두면 맞는 설계가 실패한다. 이름을 모두 옮긴 뒤 단 번호가 가장 큰 것을 6절 지연과 맞춘다.
+  - **원문 명시 인스턴스 (필수):** `notes.json`의 `named_instances`가 비어 있지 않으면 `### 필수 구조` 안에 `#### 원문 명시 인스턴스` 소절을 두고
+    `- <인스턴스 이름>: <하위 모듈>, <원문이 말한 위치>` 형식으로 옮긴다. 원문이 이름 붙인 메모리·레지스터 배열도
+    같은 소절에 적는다. 원본 IP의 테스트벤치가 계층 경로로 내부 이름을 읽는 경우가 있으므로 이름과 위치를 바꾸지 않는다.
   - **헤더/매크로/인클루드 보존 (필수):** `prompt.txt`, `header.sv`, 또는 `notes.json`에 명시된 매크로 정의(`define), 상수, 헤더 인클루드(`include "..."`), 전처리기 지시문이 있는 경우, `### 필수 구조`에 이를 반드시 명시하여 RTL 구현 시 최상단에 누락 없이 선언 및 인클루드하도록 강제한다.
-  - **디폴트 값 및 미매핑 분기 명세 (V 조건 - 상태 유지 vs 초기화):** 주소 디코더, 레지스터 맵, 멀티플렉서, case 문에서 미매핑 주소(unmapped address)나 지정되지 않은 디폴트 조건(default condition), 비활성 사이클(idle)에 대해 이전 상태 값을 그대로 유지할지(`hold`, 예: `wb_dat_o <= wb_dat_o`), 특정 디폴트 값으로 초기화할지(`clear`, 예: `wb_dat_o <= 32'd0`)를 5절 기능 요구사항 및 9절 필수 구조에 명확히 명시한다. 프롬프트가 미매핑 주소 접근 시 이전 값 유지를 명시하거나 요구하는 경우 불필요한 `default: wb_dat_o <= 0`을 삽입하지 않도록 명시한다.
-  - **비동기 FIFO 필수 구조:** 이중 포트 RAM(`dual_port_RAM`) 하위 인스턴스화, 쓰기/읽기 포인터 바이너리 레지스터 갱신 및 그레이 코드 변환 레지스터 래치, 2단 플립플롭 동기화기, 동기화된 그레이 포인터와의 순수 조합논리 플래그 비교(`assign wfull = ...; assign rempty = ...;`)를 필수 구조로 명시한다. 동기화기 출력을 사용한 플래그 비교는 이미 동기화된 신호이므로 글리치 금지 대상이 아님을 명확히 한다.
+  - **디폴트 값 및 미매핑 분기 명세 (V 조건 - 상태 유지 vs 초기화):** 주소 디코더, 레지스터 맵, 멀티플렉서, case 문에서 미매핑 주소(unmapped address)나 지정되지 않은 디폴트 조건(default condition), 비활성 사이클(idle)에 대해 이전 상태 값을 그대로 유지할지(`hold`), 특정 디폴트 값으로 초기화할지(`clear`)를 5절 기능 요구사항 및 9절 필수 구조에 명확히 명시한다. 프롬프트가 미매핑 주소 접근 시 이전 값 유지를 명시하거나 요구하는 경우 출력을 0으로 지우는 불필요한 default 분기를 넣지 않도록 명시한다.
 - 10절 (`## 10. 열린 질문`): 없으면 `- 없음`으로 적는다.
   - **LESSON 옮겨 적기 (필수):** `notes.json`의 `lessons`에 항목이 있으면 하나도 빼지 않고 `- Q-xx [LESSON] <내용>` 형식으로 10절에 그대로 적는다
     (헤더 지시문 결함, 리셋 판정 충돌처럼 툴이 찾은 것으로, 사람이 확인해야 한다). 이때 10절에 `- 없음`은 쓰지 않는다.
-- **프롬프트 우선:** 위 지침의 예시(비동기 FIFO 구조 등)와 `prompt.txt`가 다르면 `prompt.txt`를 따르고, 다른 점을 10절에 `- Q-xx [LESSON] ...`으로 적는다.
+- **프롬프트 우선:** 위 지침의 예시와 `prompt.txt`가 다르면 `prompt.txt`를 따르고, 다른 점을 10절에 `- Q-xx [LESSON] ...`으로 적는다.
 
 작성 후 반드시 아래 명령을 실행해 `"ok": true`가 나오는지 확인하고, 오류가 있으면 모두 고친 뒤 종료한다:
 ```bash
@@ -285,7 +300,8 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
         is_async = False
         if not explicit_sync and lessons is not None:
             lessons.append(f"리셋 판정 기본값: prompt.txt에 리셋 {rst_port}의 동기/비동기가 없어 동기로 정했다. 사용자가 확인해야 한다.")
-    return clk_edge, active, is_async
+    p_active, p_async = port_reset_traits(prompt_text, rst_port)
+    return clk_edge, p_active or active, is_async if p_async is None else p_async
 
 
 def _inject_dummy_seq_if_empty(sv_text: str, top: str, prompt_text: str, incdirs: list[Path], defines: dict[str, str],
@@ -306,8 +322,19 @@ def _inject_dummy_seq_if_empty(sv_text: str, top: str, prompt_text: str, incdirs
     out_ports = [p.name for p in body.portList if p.kind == SK.Port and p.direction == pyslang.ArgumentDirection.Out]
     param_names = [m.name for m in body if m.kind == SK.Parameter and not m.isLocalParam]
 
-    clks = [p for p in in_ports if CLK_RE.search(p)]
-    rsts = [p for p in in_ports if RST_RE.search(p) and p not in clks]
+    width = {p.name: getattr(getattr(p, "type", None), "bitWidth", 1) for p in body.portList if p.kind == SK.Port}
+    # 여러 비트 포트는 클럭이 아니다 (ChipVerilog i2c clk_cnt[15:0]은 분주 값)
+    clks = [p for p in in_ports if CLK_RE.search(p) and width.get(p, 1) == 1]
+    rsts = [p for p in in_ports if RST_RE.search(p) and p not in clks and width.get(p, 1) == 1]
+    if len(clks) == 1 and len(rsts) > 1:
+        # 클럭 하나에 리셋이 여럿 (동기 rst + 비동기 nReset): 포트 설명이 비동기라 한 리셋을 도메인 리셋으로, 나머지는 동기 입력으로
+        asyncs = [r for r in rsts if port_reset_traits(prompt_text, r)[1]]
+        if asyncs:
+            keep = asyncs[0]
+            if lessons is not None:
+                lessons.append(f"리셋이 여럿: 포트 설명이 비동기라 한 {keep}를 {clks[0]} 도메인 리셋으로, "
+                               f"{[r for r in rsts if r != keep]}는 동기 입력(조건 분기)으로 다룬다.")
+            rsts = [keep]
     data_ins = [p for p in in_ports if p not in clks and p not in rsts]
 
     if not clks:
@@ -516,6 +543,14 @@ def prompt_coverage(prompt_text: str, spec_text: str, top: str = "") -> dict[str
     return {"total": total, "found": total - len(missing), "ratio": (total - len(missing)) / total if total else 1.0, "missing": missing}
 
 
+_NAMED_INST_RE = re.compile(r"\b(?:instantiated|instanced)\s+as\s+`?([A-Za-z_][A-Za-z0-9_]*)`?|\binstance\s+(?:named|called)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?")
+
+
+def named_instances(prompt_text: str) -> list[str]:
+    """원문이 이름을 말한 하위 모듈 인스턴스 ("the data_mem module is instantiated as dmem"). 원본 TB가 계층 경로로 읽는다."""
+    return sorted({a or b for a, b in _NAMED_INST_RE.findall(prompt_text)})
+
+
 def named_registers(prompt_text: str, top: str = "") -> list[str]:
     """원문이 이름 붙여 설명한 내부 레지스터·단 (숫자 접미 식별자: sum_2, exponent_3, sign_20). 포트 이름은 헤더가 따로 준다."""
     return sorted({t for t in _NAMED_REG_RE.findall(prompt_text) if t != top and len(t) >= 3})
@@ -654,7 +689,7 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     raw_text = _read_header_text(item.header_sv)
-    lessons: list[str] = []
+    lessons: list[str] = list(item.eval.extra.get("header_lessons", []))   # 어댑터가 헤더를 고친 기록 (ChipVerilog i2c)
     clean_hdr = strip_to_header(raw_text, item.top, lessons)
     incdirs = [Path(p).resolve() for p in item.incdirs]
     cells = [Path(p).resolve() for p in item.cells if Path(p).exists()]
@@ -671,6 +706,13 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
 
     inp = Inputs([*cells, aug_file], item.top, dict(item.params), incdirs, dict(item.defines))
     r1_res = r1_mod.run(inp, work_dir)
+    cell_names = {c.name for c in cells}
+    if cells and (rej := r1_res.get("rejects")) and all(r.get("file") in cell_names for r in rej):
+        # 제공 셀만 slang에서 거부됨 (ChipVerilog fpu: fpu_div.v의 ANSI 포트를 본문에서 다시 `reg`로 선언. iverilog·공식 채점은 받아들임).
+        # 헤더는 셀 없이도 추출되므로 셀을 빼고 다시 추출하고, 셀은 그대로 생성·채점에 쓴다
+        lessons.append(f"[헤더 추출] 제공 셀 {sorted({r['file'] for r in rej})}을(를) slang이 거부해 셀 없이 헤더를 추출함: "
+                       f"{rej[0].get('message', '')[:120]}")
+        r1_res = r1_mod.run(Inputs([aug_file], item.top, dict(item.params), incdirs, dict(item.defines)), work_dir)
     if r1_res.get("rejects") or not r1_res.get("ok"):
         raise RuntimeError(f"R1 헤더 추출 실패: {r1_res.get('rejects') or r1_res.get('validate')}")
 
@@ -759,6 +801,7 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
         "config_macros": cfg_macros,
         "figures": [Path(f).name for f in item.attachments],
         "named_registers": named_registers(item.prompt_text, item.top),
+        "named_instances": named_instances(item.prompt_text),
         "lessons": list(dict.fromkeys(lessons)),
     }
     (work_dir / "top.l1.json").write_text(json.dumps(top_l1, ensure_ascii=False, indent=2), encoding="utf-8")

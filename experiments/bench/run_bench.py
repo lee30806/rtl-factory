@@ -148,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
                                                  "chipverilog·realbench·cvdp는 생략 시 experiments/bench/datasets.json의 기본 경로)")
     ap.add_argument("--include-defects", action="store_true",
                     help="datasets.json의 exclude(정답 자체가 채점을 통과하지 못하는 문제)도 실행")
+    ap.add_argument("--prompt-source", choices=["cvdp", "raw"], default="cvdp",
+                    help="chipverilog 입력: cvdp(pymtl 변환본, 원문 + 추가 안내) 또는 raw(원본 description.txt만. 논문·엔진 간 비교용)")
     ap.add_argument("--subset", choices=["sequential", "combinational", "all"], default="sequential")
     ap.add_argument("--mode", choices=["harness", "standalone", "both", "spec"], default="harness", help="실행 모드")
     ap.add_argument("--spec-dir", type=Path, help="미리 작성된 SPEC 디렉터리 (지정 시 <spec-dir>/<id>/spec을 복사해 재사용)")
@@ -183,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"다시 채점 {len(res)}개: {out_dir / 'summary.md'}")
             return 0
     elif args.bench == "chipverilog":
-        items = load_chipverilog(args.dataset or ROOT / "build" / "cvdp_datasets" / "cvdp_chipverilog.jsonl", out_dir / "_src")
+        items = load_chipverilog(args.dataset or ROOT / "build" / "cvdp_datasets" / "cvdp_chipverilog.jsonl", out_dir / "_src",
+                                 args.prompt_source)
     elif args.bench == "realbench":
         items = load_realbench(args.dataset, out_dir / "_src")
     elif args.bench == "cvdp":

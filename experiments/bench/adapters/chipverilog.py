@@ -46,7 +46,79 @@ def reference_file(d: Path) -> Path:
     return vs[0]
 
 
-def to_item(rec: dict, src_root: Path) -> BenchItem:
+def raw_description(original_id: str) -> Path:
+    """ChipVerilog 원본 과제 설명(`Src/**/des/**/description.txt`). 디렉터리 이름이 Des와 같다 (fpu만 원본이 fpu_double).
+    ChipVerilog 논문 프로토콜(run_codex_batch_txt.sh)이 모델에게 주는 유일한 입력이다."""
+    name = "fpu_double" if original_id == "fpu" else original_id
+    hits = [p for p in CV_ROOT.glob("Src/**/description.txt") if p.parent.name == name]
+    if len(hits) != 1:
+        raise FileNotFoundError(f"ChipVerilog 원본 설명을 찾지 못함: {original_id} ({hits})")
+    return hits[0]
+
+
+PROMPT_SOURCES = ("cvdp", "raw")
+
+_SECTION = re.compile(r"^\s*(Input|Output|Inout|Bidirectional)\s+ports?\s*:\s*$", re.I | re.M)
+_SECTION_PORT = re.compile(r"^ {1,8}(?:(?:input|output|inout)\s+)?(?:reg\s+|wire\s+)?([A-Za-z_]\w*)\s*(\[[^\]]+\])?\s*:", re.M)
+_DIRS = {"input": "input", "output": "output", "inout": "inout", "bidirectional": "inout"}
+
+
+def _decl_ports(text: str, top: str) -> list[tuple[str, str | None, str]] | None:
+    """원문 모듈 선언의 포트 (이름, 방향 또는 None, 폭). ANSI 선언은 앞 포트의 방향·폭을 이어받는다 (Verilog 규칙)."""
+    m = re.search(r"\bmodule\s+" + re.escape(top) + r"\b\s*(?:#\s*\((?:[^()]|\([^()]*\))*\)\s*)?\((.*?)\)\s*;", text, re.S)
+    if not m:
+        return None
+    body = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S))
+    body = re.sub(r"^\s*`.*$", "", body, flags=re.M)        # `ifdef 같은 지시문 줄
+    out, d, w = [], None, ""
+    for part in body.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if dm := re.match(r"(input|output|inout)\b\s*(?:reg|wire|logic)?\s*(?:signed\s*)?(\[[^\]]+\])?", part):
+            d, w = dm.group(1), dm.group(2) or ""
+        names = re.findall(r"[A-Za-z_]\w*", re.sub(r"\[[^\]]*\]", "", part))
+        if names:
+            out.append((names[-1], d, w))
+    return out
+
+
+def header_from_description(text: str, top: str) -> tuple[str, list[str]]:
+    """원본 description.txt만으로 헤더를 만든다: 포트 순서는 모듈 선언, 방향·폭은 `Input ports:`/`Output ports:` 절이 우선.
+    절에 없는 포트는 선언을 따른다. 만들 수 없으면 ("", 사유). 두 번째 값은 선언과 절이 어긋나 절을 따른 포트 목록."""
+    decl = _decl_ports(text, top)
+    if not decl:
+        return "", ["모듈 선언 없음"]
+    sec: dict[str, tuple[str, str]] = {}
+    heads = list(_SECTION.finditer(text))
+    for i, h in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        chunk = text[h.end():end]
+        stop = re.search(r"^\S", chunk, re.M)                  # 들여쓰지 않은 다음 문단에서 절이 끝남
+        for pm in _SECTION_PORT.finditer(chunk[: stop.start()] if stop else chunk):
+            sec.setdefault(pm.group(1), (_DIRS[h.group(1).lower()], pm.group(2) or ""))
+    lines, fixed = [], []
+    for name, d, w in decl:
+        sd, sw = sec.get(name, (None, ""))
+        if sd and sd != d:
+            if d:                                                 # 비 ANSI 선언(방향 없음)은 절을 따르는 것이 정상이라 적지 않는다
+                fixed.append(f"{name}: 선언 {d}{w} → 절 {sd}{sw}")
+            d, w = sd, sw
+        elif sd and sw and sw.replace(" ", "") != w.replace(" ", ""):
+            fixed.append(f"{name}: 선언 폭 {w or '1비트'} → 절 {sw}")
+            w = sw
+        if not d:
+            return "", [f"포트 {name}의 방향을 정할 수 없음"]
+        lines.append(f"    {d} {w + ' ' if w else ''}{name}")
+    return f"module {top} (\n" + ",\n".join(lines) + "\n);\nendmodule\n", fixed
+
+
+def _header_ports(header: str, top: str) -> list[tuple[str, str | None, str]]:
+    return _decl_ports(header, top) or []
+
+
+def to_item(rec: dict, src_root: Path, prompt_source: str = "cvdp") -> BenchItem:
+    """prompt_source: `cvdp`는 pymtl 변환본 `input`(원문 + 추가 안내), `raw`는 원본 description.txt만 (논문 비교·엔진 간 공정 비교용)."""
     h, meta = rec["harness"], rec["metadata"]
     d = Path(src_root).resolve() / rec["id"]
     for rel, text in h["files"].items():
@@ -55,22 +127,35 @@ def to_item(rec: dict, src_root: Path) -> BenchItem:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
     top = meta["top_module"]
+    header = meta.get("header_sv") or rec["context"].get(f"rtl/{top}.sv", "")
+    header_lessons: list[str] = []
+    # pymtl 변환본 헤더가 원문 모듈 선언과 다른 문제가 있다 (i2c 3개: 포트 누락, 산문 단어를 포트로 씀). 원문으로 다시 만든다.
+    # 변환본의 `define 줄은 그대로 앞에 둔다 (원문 프롬프트에 있는 매크로)
+    desc = raw_description(meta["original_id"]).read_text(encoding="utf-8")
+    new_hdr, fixed = header_from_description(desc, top)
+    if new_hdr and [(n, d) for n, d, _ in _header_ports(header, top)] != [(n, d) for n, d, _ in _header_ports(new_hdr, top)]:
+        defs = "".join(ln + "\n" for ln in header.splitlines() if ln.lstrip().startswith("`define"))
+        header_lessons.append(f"[헤더] 변환본 헤더의 포트가 원문 모듈 선언과 달라 원본 description.txt로 헤더를 다시 만듦"
+                              + (f" (원문 선언과 포트 설명 절이 어긋나 설명 절을 따름: {'; '.join(fixed)[:400]})" if fixed else ""))
+        header = defs + new_hdr
     return BenchItem(
         benchmark="chipverilog",
         id=rec["id"],
         category=meta.get("tier", "standalone"),
         top=top,
-        prompt_text=rec["input"],
-        header_sv=meta.get("header_sv") or rec["context"].get(f"rtl/{top}.sv", ""),
+        prompt_text=(raw_description(meta["original_id"]).read_text(encoding="utf-8") if prompt_source == "raw" else rec["input"]),
+        header_sv=header,
         incdirs=[str(d / x) for x in h.get("include_dirs", [])],
         cells=[str(d / c) for c in h.get("cell_files", [])],
         reference_rtl=[str(reference_file(des_dir(meta["original_id"])))],
-        eval=EvalSpec(kind="chipverilog"),
+        eval=EvalSpec(kind="chipverilog", extra={"header_lessons": header_lessons} if header_lessons else {}),
     )
 
 
-def load_chipverilog(path: Path, src_root: Path) -> list[BenchItem]:
-    return [to_item(r, src_root) for r in load_records(path)]
+def load_chipverilog(path: Path, src_root: Path, prompt_source: str = "cvdp") -> list[BenchItem]:
+    if prompt_source not in PROMPT_SOURCES:
+        raise ValueError(f"prompt_source는 {PROMPT_SOURCES} 중 하나: {prompt_source}")
+    return [to_item(r, src_root, prompt_source) for r in load_records(path)]
 
 
 _CHECK_RE = re.compile(r"^\s*\d+\s*ps\s+(Answer is correct|Error! \S+ is incorrect)\s+([0-9a-fA-Fxz]+)", re.M)
@@ -145,6 +230,20 @@ def _verify(text: str, name: str, root: Path, timeout: int) -> tuple[dict | None
     return (json.loads(rf.read_text(encoding="utf-8")) if rf.exists() else None), cdir / f"{name}_t1", p.stdout + p.stderr
 
 
+# 후보 결함이 아니라 채점 환경이 판정을 내리지 못한 상태. 반례·실패 검사가 없어 Repair가 고칠 근거가 없다
+GRADER_DEFECT_STATUS = {
+    "equivalence_error": "등가 검사 도구가 판정하지 못함 (예: 메모리 셀 $mem_v2를 SAT로 옮기지 못함)",
+    "equivalence_timeout": "등가 검사 시간 초과",
+    "reference_fail": "정답 RTL이 채점 도구에서 컴파일되지 않음",
+}
+
+
+def grader_defect(r: dict) -> str:
+    """공식 판정이 채점 환경 결함이면 그 이유, 후보를 고쳐야 하는 실패(컴파일·기능·인터페이스)거나 통과면 빈 문자열."""
+    why = GRADER_DEFECT_STATUS.get(r.get("status") or "")
+    return f'{r.get("status")}: {why}. {str(r.get("reason", ""))[:300]}' if why else ""
+
+
 def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int = 1800) -> dict[str, Any]:
     """후보 SV 파일들을 한 파일로 합쳐 공식 결과 트리(`<root>/rtlf/<모듈>/<모듈>_t1.v`)에 두고 공식 verify를 돌린다.
     같은 이름 module이 둘이면 처음 것(제공 셀)만 남긴다."""
@@ -156,7 +255,8 @@ def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int
     text = "`define SYNTHESIS\n" + body
     r, adir, log = _verify(text, name, eval_dir, timeout)
     if not r:
-        return {"ok": False, "kind": "chipverilog", "stage": "tool_error", "log_tail": log[-1000:]}
+        return {"ok": False, "kind": "chipverilog", "stage": "tool_error", "log_tail": log[-1000:],
+                "grader_defect": "공식 도구가 결과를 남기지 않음 (채점 도구 오류)"}
     ok = r.get("status") == "pass"
     # 등가 실패면 증명되지 않은 출력 이름을 남긴다 (Repair가 볼 단서. 공식 반례 요약은 배너뿐인 때가 많다)
     unproven = []
@@ -176,6 +276,7 @@ def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int
         diag = diagnose_sim(sl.read_text(errors="replace"), tbs[0].read_text(errors="replace") if tbs else "")
     return {"ok": ok, "kind": "chipverilog", "status": r.get("status"), "flow": r.get("flow"), "proof_type": r.get("proof_type"),
             "stage": stage, "unproven_outputs": unproven, "deduped_modules": dropped, "diagnosis": diag, "stub_modules": stubs,
+            "grader_defect": grader_defect(r),
             "log_tail": "" if ok else (f'{r.get("status")}: ' + (diag + " " if diag else "")
                                        + (f"정답의 하위 모듈 {stubs}이(가) 데이터셋에 없어 공식 도구의 스텁으로 채점됨 (채점 결함). " if stubs else "")
                                        + (f"정답과 등가가 증명되지 않은 출력 {unproven[:20]} (사이클 단위 비교). " if unproven else "")

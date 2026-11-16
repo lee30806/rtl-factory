@@ -16,7 +16,7 @@ from experiments.bench.common.schema import BenchItem, BenchResult
 from pipeline.importer.sources import SourceError
 from experiments.bench.common.to_spec import _read_header_text, ensure_header, extract_header_l1, generate_spec, strip_to_header
 from pipeline.agents import roles as roles_mod, spec_writer
-from pipeline.agents.task import RUNS, QuotaExceeded, Task, run_task
+from pipeline.agents.task import RUNS, QuotaExceeded, Task, TaskResult, run_task
 from pipeline.emitter.sdc import emit_sdc
 from pipeline.ir.model import Module
 from pipeline.scheduler import approve
@@ -34,11 +34,10 @@ You are a professional RTL hardware designer. Read the design specification in `
 - `header.sv`: Exact module declaration (`module {top}`), parameters, and port declarations expected by the testbench.
 
 ## Requirements
-- Write the complete Verilog/SystemVerilog code to `out/{top}.sv` (if the design requires helper submodules such as `dual_port_RAM`, include them in `out/{top}.sv` as well).
+- Write the complete Verilog/SystemVerilog code to `out/{top}.sv` (if the design requires helper submodules, include them in `out/{top}.sv` as well).
 - Keep the exact top module name `{top}`, parameter names/defaults, and port names/widths/directions from `header.sv`.
 - Preserve all compiler directives (`define, `include, `ifdef) specified in `header.sv` or `prompt.txt` at the very top of `out/{top}.sv`.
 - For register read multiplexers, address decoders, or case branches, strictly follow the unmapped address/default policy in `prompt.txt`: if the design specifies holding previous values on unmapped or idle cycles, do NOT insert an unnecessary default branch clearing the output to 0.
-- For asynchronous FIFOs (`asyn_fifo`) or multi-clock domain crossing (CDC) modules: follow the standard Clifford Cummings architecture and the exact register stages specified in `prompt.txt`. Do NOT insert extra output registering flip-flops (`wfull_reg`, `rempty_reg`) for full/empty flags unless explicitly declared as register ports in `header.sv`; full/empty flags are typically combinational comparisons (`assign wfull = ...; assign rempty = ...;`) comparing the local Gray pointer with the 2-stage synchronized Gray pointer. Do NOT shorten Gray pointer pipeline stages using lookahead next-state calculations if the prompt specifies sequential register update (binary counter register -> Gray conversion -> Gray pointer register), as standard benchmark testbenches verify cycle-accurate timing at every clock edge.
 - Do NOT write testbenches or markdown fences inside `out/{top}.sv`; `out/{top}.sv` must be valid, directly compilable Verilog/SystemVerilog source code.
 - Only create or modify files under `out/`.
 """
@@ -145,6 +144,7 @@ def run_pipeline_unattended(
     external_tb: Any = None,
     incdirs: list[Path] | None = None,
     seed: dict[str, Any] | None = None,
+    directives: str = "",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Run.execute()를 실행하고 waiting_approval 발생 시 auto_decide로 자동 결정하며 수렴할 때까지 반복한다.
     seed: 이전 실행의 모듈 트리와 후보 IR을 들여와 검증부터 다시 하는 재실행 (Run.seed_modules)."""
@@ -154,7 +154,7 @@ def run_pipeline_unattended(
 
     while True:
         runner = Run(run_dir, spec_path, roles, cells=cells, isolate=isolate, max_modules=max_modules, external_tb=external_tb,
-                     incdirs=incdirs, seed=seed)
+                     incdirs=incdirs, seed=seed, directives=directives)
         rep = runner.execute()
         if rep["status"] != "waiting_approval" or not auto_approve:
             return rep, auto_history
@@ -168,8 +168,15 @@ def run_pipeline_unattended(
         auto_history.extend(decs)
 
 
-def extract_candidate_rtl(run_dir: Path, candidate_idx: int, out_rtl_dir: Path, cells: list[Path] | None = None) -> list[Path] | None:
-    """후보 k(c0, c1 등)의 모든 모듈 IR을 모아 SV 파일로 방출한다."""
+def header_directives(item: BenchItem) -> str:
+    """문제 헤더의 `define 줄. rtl-factory가 방출하는 Block Top 파일에 그대로 넣는다 (Run.directives).
+    채점기는 후보를 고치지 않는다: 매크로 정의는 생성 쪽이 넣어야 한다 (단독 생성도 같은 조건)."""
+    return "\n".join(ln.strip() for ln in _read_header_text(item.header_sv).splitlines() if re.match(r"\s*`define\b", ln))
+
+
+def extract_candidate_rtl(run_dir: Path, candidate_idx: int, out_rtl_dir: Path, cells: list[Path] | None = None,
+                          directives: str = "") -> list[Path] | None:
+    """후보 k(c0, c1 등)의 모든 모듈 IR을 모아 SV 파일로 방출한다. directives는 Block Top 파일 끝에 붙인다."""
     run_dir = Path(run_dir)
     st_path = run_dir / "state.json"
     if not st_path.exists():
@@ -197,7 +204,7 @@ def extract_candidate_rtl(run_dir: Path, candidate_idx: int, out_rtl_dir: Path, 
             lib[mod_name] = child_l1
 
     cell_paths = list(cells) if cells is not None else list(STUB_CELLS)
-    files, _ = emit_lib(lib, out_rtl_dir, cell_paths)
+    files, _ = emit_lib(lib, out_rtl_dir, cell_paths, directives, tree["top"]["module"])
     top_mod = Module(tree["top"])
     if top_mod.role in ("top", "block_top"):
         mods = {n: Module(r) for n, r in lib.items()}
@@ -503,11 +510,11 @@ def run_bench_item(
             if stale := spec_writer.gate(spec_path, top_l1):
                 print(f"[{item.id}] --spec-dir SPEC이 지금의 헤더 추출과 맞지 않아 새로 씀: {stale[:2]}", flush=True)
                 spec_path.unlink()
-    spec_agent_runs = 0
+    spec_agent_runs, spec_tokens = 0, {}
     if not spec_path.exists():
         try:
             spec_out, spec_errs, spec_task_res = generate_spec(item, out_dir / "spec", roles, isolate=isolate)
-            spec_agent_runs = spec_task_res.attempts
+            spec_agent_runs, spec_tokens = spec_task_res.attempts, task_usage(spec_task_res)
         except QuotaExceeded as exc:
             res = BenchResult(
                 benchmark=item.benchmark,
@@ -535,6 +542,7 @@ def run_bench_item(
                 spec_errors=spec_errs,
                 pipeline_status="spec_failed",
                 agent_runs=spec_agent_runs,
+                tokens=spec_tokens,
                 lessons=_lessons(out_dir),
                 minutes=round((time.monotonic() - t0) / 60, 2),
             )
@@ -616,6 +624,7 @@ def run_bench_item(
         golden={**last["golden"], "round": last_round} if last.get("golden") else None,
         sim_model=bool(rep.get("sim_model")),
         lessons=_lessons(out_dir) + _grading_defects(first),
+        tokens=add_usage(spec_tokens, dir_usage(out_dir)),
     )
     res_file.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -660,6 +669,32 @@ def _lessons(out_dir: Path) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def add_usage(*parts: dict[str, Any]) -> dict[str, Any]:
+    """토큰 사용량 dict들을 더한다. 사용량을 낸 에이전트 실행 수를 `runs_with_usage`로 센다."""
+    out: dict[str, Any] = {}
+    for u in parts:
+        for k, v in (u or {}).items():
+            out[k] = round(out.get(k, 0) + v, 6) if isinstance(v, float) else out.get(k, 0) + v
+    return out
+
+
+def task_usage(res: TaskResult | dict | None) -> dict[str, Any]:
+    """작업 하나(재시도 포함)의 토큰 사용량."""
+    runs = (res.get("runs") if isinstance(res, dict) else getattr(res, "runs", None)) or []
+    return add_usage(*[{**r["usage"], "runs_with_usage": 1} for r in runs if r.get("usage")])
+
+
+def dir_usage(root: Path) -> dict[str, Any]:
+    """실행 디렉터리들(`<root>/**/tasks/*.json`, 파이프라인 Run이 남기는 작업 기록)의 토큰 사용량 합계."""
+    parts = []
+    for f in sorted(Path(root).rglob("tasks/*.json")):
+        try:
+            parts.append(task_usage(json.loads(f.read_text(encoding="utf-8"))))
+        except (ValueError, OSError):
+            continue
+    return add_usage(*parts)
+
+
 def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Path, roles: roles_mod.Roles,
                   cells: list[Path], isolate: bool = True, auto_approve: bool = True, max_auto_approves: int = 3,
                   max_arch_revisions: int = 1, max_modules: int | None = None, skip_verifier: bool = False,
@@ -685,6 +720,7 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
         external_tb=ext_tb_fn if skip_verifier else None,
         incdirs=[Path(d) for d in item.incdirs],
         seed=seed,
+        directives=header_directives(item),
     )
 
     langs = list(roles.author_langs) if getattr(roles, "author_langs", None) else ["sv"]
@@ -704,7 +740,7 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
         }
 
         cand_rtl_dir = eval_root / ckey / "rtl"
-        sv_files = extract_candidate_rtl(run_dir, k, cand_rtl_dir, cells=cells)
+        sv_files = extract_candidate_rtl(run_dir, k, cand_rtl_dir, cells=cells, directives=header_directives(item))
         bench_eval: dict[str, Any] = {"ok": False, "skipped": "IR 미생성"}
         ppa_info: dict[str, Any] | None = None
         if sv_files:
@@ -921,6 +957,7 @@ def run_standalone_item(
         pipeline_status="pass" if passed else ("generated" if has_out else "failed"),
         chosen={item.top: 0} if has_out else None,
         agent_runs=task_res.attempts,
+        tokens=task_usage(task_res),
         minutes=round((time.monotonic() - t0) / 60, 2),
         auto_approvals=[],
         review_codes=[],

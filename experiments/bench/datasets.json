@@ -44,7 +44,17 @@
     "cvdp_chipverilog_or1200_top_0061"
    ],
    "stub_graded_note": "정답의 하위 모듈(RAM 매크로 or1200_spram_*, or1200_amultp2_32x32, *_sub)이 데이터셋에 없어 공식 도구가 1비트/동작 스텁으로 바꿔 채점한다. 결과의 stub_modules와 lessons(채점 결함)에 남는다",
-   "config_macro_note": "30문제는 프롬프트가 말하는 `ifdef 구성 매크로가 제공 or1200_defines.v에서 주석 처리되어 있다. 정답은 정의되지 않은 쪽 구성이며 to_spec.config_macros가 LESSON으로 알리고 SPEC 규칙이 그 구성을 고르게 한다"
+   "config_macro_note": "30문제는 프롬프트가 말하는 `ifdef 구성 매크로가 제공 or1200_defines.v에서 주석 처리되어 있다. 정답은 정의되지 않은 쪽 구성이며 to_spec.config_macros가 LESSON으로 알리고 SPEC 규칙이 그 구성을 고르게 한다",
+   "header_defect": {
+    "cvdp_chipverilog_or1200_top_0061": "원본 description.txt의 모듈 선언이 선언되지 않은 파라미터 ppic_ints를 포트 폭에 쓴다 (input [ppic_ints-1:0] pic_ints_i). 정답은 parameter ppic_ints = `OR1200_PIC_INTS. 헤더 추출(slang)이 TypoIdentifier로 거부해 rtl-factory는 SPEC 실패로 끝난다. 단독 생성은 파라미터를 스스로 선언하면 통과할 수 있어 엔진 간 비교에서 주석을 단다"
+   },
+   "print_only_tb": [
+    "cvdp_chipverilog_if_stage_0018",
+    "cvdp_chipverilog_mips_16_core_top_0025",
+    "cvdp_chipverilog_register_file_0026",
+    "cvdp_chipverilog_or1200_top_0061"
+   ],
+   "print_only_tb_note": "정답 디렉터리에 TB가 있지만 실패 판정 문구가 없어 공식 도구가 판정에 쓰지 않고 등가 검사로 넘긴다 (tb_is_self_checking). 외부 TB 보정·Repair 근거에서 뺀다. 자체 검사 TB가 있는 12문제가 ChipVerilog-TB 트랙이다"
   }
  },
  "realbench": {

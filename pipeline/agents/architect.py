@@ -43,6 +43,8 @@ TASK = """\
 2. 하위 모듈마다 L1(module, role, params, domains, ports)만 있는 IR을 `out/ir/<모듈>.ir.json`에 쓴다.
 3. Block Top IR을 `out/ir/{top}.ir.json`에 쓴다. `block_top.json`의 L1을 그대로 두고 `instances`(파라미터 바인딩, domain_map)와
    `connections`를 더한다. 번들은 프로토콜이 같으면 번들 이름으로 한 번에 잇는다 (예: `self.s_axis` → `u_core.s_axis`).
+   SPEC(9절 `#### 원문 명시 인스턴스`, 부록 원문)이 하위 모듈의 인스턴스 이름을 말하면
+   그 하위 모듈을 원문이 말한 위치에 그 이름 그대로 인스턴스한다. 원본 IP의 테스트벤치가 계층 경로로 내부 이름을 읽는 경우가 있다.
 4. SPEC에서 정하지 않아 네가 정한 것(모듈 경계, 하위 모듈 사이 프로토콜, 지연 배분 등)을 `out/assumptions.json`에
    `{{"assumptions": [{{"text": "...", "affects": [...]}}, ...]}}`로 쓴다. `affects`는 그 가정이 건드리는 것이다:
    `l1`(Block Top의 포트, 파라미터, 프로토콜의 해석), `timing`(지연, 처리율, 사이클 시점), `reset`(리셋 동작),

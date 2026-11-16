@@ -66,16 +66,19 @@ class BudgetExceeded(RuntimeError):
 class Run:
     def __init__(self, run_dir: Path, spec: Path, roles: roles_mod.Roles, cells: list[Path] | None = None,
                  isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None,
-                 max_modules: int | None = None, external_tb=None, incdirs: list[Path] | None = None):
+                 max_modules: int | None = None, external_tb=None, incdirs: list[Path] | None = None, directives: str = ""):
         """seed: 이전 실행에서 이어 가는 재실행(환류). {"parent": 실행 디렉터리, "kind": "external_repair" | "spec_change",
         "failures": {모듈: 분류된 외부 리포트 항목}, "old_spec": 이전 SPEC, "spec_diff": spec_diff.diff 결과}.
         max_modules: Architect의 하위 모듈 수 상한 (P11 R6 재생성). 상태에 남아 이어 가기에서도 같다.
         incdirs: 셀 RTL이 `include하는 헤더 디렉터리. lint, 시뮬레이션, 번역기 검사의 Verilator 인자로 넘긴다 (ChipVerilog or1200 timescale.v).
+        directives: 설계 헤더가 준 컴파일러 지시문(`define 줄). 방출하는 Block Top 파일 끝에 붙인다. IR은 매크로를 값으로 풀어
+          쓰므로 정의가 사라지는데, 같은 헤더를 쓰는 외부 테스트벤치가 그 매크로 이름을 쓴다 (ChipVerilog cordic `XY_BITS).
         external_tb: 외부 테스트벤치 실행 콜백 `(sv_files, top, eval_dir) -> {"ok": bool, "stage": str, "log_tail": str}`. 지정 시 Verifier 에이전트를 생략한다."""
         self.dir, self.spec_path, self.roles = Path(run_dir).resolve(), Path(spec).resolve(), roles
         self.cells, self.isolate, self.seeds = cells if cells is not None else STUB_CELLS, isolate, seeds or [1]
         self.external_tb = external_tb
         self.inc_args = [f"-I{Path(d).resolve()}" for d in (incdirs or [])]
+        self.directives = directives
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "modules").mkdir(exist_ok=True)
         (self.dir / "tasks").mkdir(exist_ok=True)
@@ -584,7 +587,7 @@ class Run:
                 files += [f for f in external_files(m) if f not in files]
                 continue
             e = emit(m, mods)
-            (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
+            (rtl / f"{n}.sv").write_text(with_directives(e.text, n == top, self.directives), encoding="utf-8")
             files.append(rtl / f"{n}.sv")
             maps[n] = e.sourcemap
         roles = {n: m.role for n, m in mods.items()}
@@ -616,7 +619,8 @@ class Run:
                     rule = "SIM_TIMEOUT" if stage == "sim_timeout" else "AssertionError"
                     msg = ext_r.get("log_tail") or ext_r.get("error") or "외부 테스트벤치 실패"
                     findings = [{"test": "external_tb", "rule": rule, "message": str(msg)[:800], **self.external_evidence(ext_r)}]
-                e2.append({"verifier": "ext", "ok": ext_ok, "findings": findings, "out": str(ext_dir)})
+                e2.append({"verifier": "ext", "ok": ext_ok, "findings": findings, "out": str(ext_dir),
+                           "grader_defect": "" if ext_ok else str(ext_r.get("grader_defect") or "")})
         else:
             for k, tb in enumerate([] if frag_lint else tbs):
                 r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
@@ -859,6 +863,12 @@ class Run:
                          comb_paths=len(paths) if rule else None)
                 break
             failed = [x for x in vres["e2"] if not x["ok"]]
+            if failed and all(x.get("grader_defect") for x in failed):
+                # 외부 채점이 판정을 내리지 못함 (채점 도구 오류): 후보를 고칠 근거가 없으므로 Repair하지 않고 사람에게 남긴다
+                why = failed[0]["grader_defect"]
+                self.review("GRADER_DEFECT", f"{gname} 후보 {c}: 외부 채점이 판정하지 못해 Repair하지 않음: {why[:300]}", failed[0].get("out", ""))
+                save_all(status="failed", reason=f"채점 환경 결함: {why[:200]}", grader_defect=why)
+                break
             nfail = sum(len({f["test"] for f in x["findings"] if f["test"]}) or 1 for x in failed)
             # 실패한 테스트가 가장 적었던 리비전: 끝까지 통과하지 못하면 사람이 볼 후보로 남긴다 (Repair가 나중 리비전을
             # 망가뜨리는 경우. RTLLM freq_divbyeven은 r0가 외부 정답 TB를 통과했고 r3는 실패)
@@ -1192,7 +1202,7 @@ class Run:
                         shutil.copy(f, rtl / f.name)
                 continue
             e = emit(m, mods)
-            (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
+            (rtl / f"{n}.sv").write_text(with_directives(e.text, n == tree["top"]["module"], self.directives), encoding="utf-8")
             # 외부 리포트를 IR 노드에 대응시킬 때 쓴다
             (rtl / f"{n}.srcmap.json").write_text(json.dumps(e.sourcemap, ensure_ascii=False), encoding="utf-8")
             (self.dir / "ir" / f"{n}.ir.json").write_text(json.dumps(lib[n], ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1339,8 +1349,16 @@ def external_files(m: Module) -> list[Path]:
     return [(Path(f) if Path(f).is_absolute() else base / f).resolve() for f in m.raw.get("rtl_files", [])]
 
 
-def emit_lib(lib: dict[str, dict], rtl: Path, cells: list[Path]) -> tuple[list[Path], dict]:
-    """IR 묶음을 SV로 방출한다 → (파일 목록, 모듈별 소스맵)."""
+def with_directives(text: str, is_top: bool, directives: str) -> str:
+    """Block Top 방출 텍스트 끝에 헤더 지시문을 붙인다. 끝에 두므로 소스맵 줄 번호가 바뀌지 않고, 방출 RTL 자신은 매크로를 쓰지 않는다
+    (값으로 풀려 있음). 뒤에 컴파일되는 테스트벤치가 매크로를 본다."""
+    if not (is_top and directives.strip()):
+        return text
+    return text.rstrip("\n") + "\n\n// 설계 헤더가 준 컴파일러 지시문 (외부 테스트벤치가 같은 매크로를 쓴다)\n" + directives.strip() + "\n"
+
+
+def emit_lib(lib: dict[str, dict], rtl: Path, cells: list[Path], directives: str = "", top: str | None = None) -> tuple[list[Path], dict]:
+    """IR 묶음을 SV로 방출한다 → (파일 목록, 모듈별 소스맵). directives는 top 파일 끝에 붙인다 (Run.directives)."""
     rtl.mkdir(parents=True, exist_ok=True)
     mods = {n: Module(r) for n, r in lib.items()}
     files, maps = list(cells), {}
@@ -1349,7 +1367,7 @@ def emit_lib(lib: dict[str, dict], rtl: Path, cells: list[Path]) -> tuple[list[P
             files += [f for f in external_files(m) if f not in files]
             continue
         e = emit(m, mods)
-        (rtl / f"{n}.sv").write_text(e.text, encoding="utf-8")
+        (rtl / f"{n}.sv").write_text(with_directives(e.text, n == top, directives), encoding="utf-8")
         files.append(rtl / f"{n}.sv")
         maps[n] = e.sourcemap
     return files, maps

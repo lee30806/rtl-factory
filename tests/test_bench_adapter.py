@@ -500,7 +500,9 @@ def test_ext_fix_trigger_chipverilog_needs_self_checking_tb(tmp_path: Path):
     item = BenchItem("chipverilog", "x", "standalone", "x", "", "", reference_rtl=[str(des / "x.v")], eval=EvalSpec(kind="chipverilog"))
     sc = _scored("failed", False, [False, False])
     assert not has_external_tb(item) and ext_fix_trigger(item, sc) is None
-    (des / "x_TB.v").write_text("module tb; endmodule\n", encoding="utf-8")
+    (des / "x_TB.v").write_text('module tb; initial $display("value %h", 1); endmodule\n', encoding="utf-8")
+    assert not has_external_tb(item)                                    # 출력만 하는 TB: 공식 채점이 판정에 쓰지 않음
+    (des / "x_TB.v").write_text('module tb; initial $display("Error! out is incorrect"); endmodule\n', encoding="utf-8")
     assert has_external_tb(item) and ext_fix_trigger(item, sc) == "external_fail"
     sc["rep"]["review"] = [{"code": "UNDEFINED", "message": "EXC-03 미정의: 특수값"}]
     assert repair_trigger(item, sc) == 0
@@ -656,9 +658,10 @@ def test_external_tb_files_excludes_reference(tmp_path: Path):
     des = tmp_path / "des"
     des.mkdir()
     (des / "ref.v").write_text("module ref; endmodule\n", encoding="utf-8")
-    (des / "ref_TB.v").write_text("module ref_tb; endmodule\n", encoding="utf-8")
+    tb = 'module ref_tb; initial $display("Error! mismatch"); endmodule\n'
+    (des / "ref_TB.v").write_text(tb, encoding="utf-8")
     cv = BenchItem("chipverilog", "y", "standalone", "y", "", "", reference_rtl=[str(des / "ref.v")], eval=EvalSpec(kind="chipverilog"))
-    assert external_tb_files(cv) == {"ref_TB.v": "module ref_tb; endmodule\n"}
+    assert external_tb_files(cv) == {"ref_TB.v": tb}
     assert external_tb_files(BenchItem("x", "z", "c", "z", "", "", eval=EvalSpec(kind="yosys_lec"))) == {}
 
 
