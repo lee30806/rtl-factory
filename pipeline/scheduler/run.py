@@ -370,7 +370,7 @@ class Run:
                         "lead_note": p["decision"].get("note"), "by": p["decision"].get("by")} for p in items]
         mx = self.state.get("max_modules")
         res = self.agent("architect", architect.make_revise_task(f"architect/rev{rev}", top_l1, self.spec_path, tree, conflicts, mx),
-                         architect.check(top_l1, mx))
+                         architect.check(top_l1, mx, architect.spec_latency(self.spec_path)))
         if not res.ok:
             self.review("ARCHITECT_REVISE_FAILED", f"Architect가 모듈 트리를 다시 정하지 못함 ({[p['id'] for p in items]}): "
                                                    f"{res.errors[:3]}", str(res.workdir), "architect")
@@ -439,7 +439,7 @@ class Run:
             return tree
         top_l1, _ = block_top_l1(load_spec(self.spec_path))
         mx = self.state.get("max_modules")
-        res = self.agent("architect", architect.make_task("architect", top_l1, self.spec_path, mx), architect.check(top_l1, mx))
+        res = self.agent("architect", architect.make_task("architect", top_l1, self.spec_path, mx), architect.check(top_l1, mx, architect.spec_latency(self.spec_path)))
         if not res.ok:
             self.finish_step("architect", None)
             return None

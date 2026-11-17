@@ -43,6 +43,8 @@ TASK = """\
 2. 하위 모듈마다 L1(module, role, params, domains, ports)만 있는 IR을 `out/ir/<모듈>.ir.json`에 쓴다.
 3. Block Top IR을 `out/ir/{top}.ir.json`에 쓴다. `block_top.json`의 L1을 그대로 두고 `instances`(파라미터 바인딩, domain_map)와
    `connections`를 더한다. 번들은 프로토콜이 같으면 번들 이름으로 한 번에 잇는다 (예: `self.s_axis` → `u_core.s_axis`).
+   하위 모듈(제공 셀 포함)을 인스턴스하면 그 출력은 결과를 쓰는 모듈의 입력이나 Block Top 출력으로 반드시 잇는다. 결과가 버려지는
+   인스턴스는 검사에서 거부된다.
    SPEC(9절 `#### 원문 명시 인스턴스`, 부록 원문)이 하위 모듈의 인스턴스 이름을 말하면
    그 하위 모듈을 원문이 말한 위치에 그 이름 그대로 인스턴스한다. 원본 IP의 테스트벤치가 계층 경로로 내부 이름을 읽는 경우가 있다.
 4. SPEC에서 정하지 않아 네가 정한 것(모듈 경계, 하위 모듈 사이 프로토콜, 지연 배분 등)을 `out/assumptions.json`에
@@ -57,6 +59,9 @@ TASK = """\
    - `timing`: 보내는 모듈이 Block Top 입력을 받은 사이클에서 몇 사이클 뒤에 이 연결로 내는지(레지스터 단 수),
      받는 모듈이 받은 뒤 몇 사이클 뒤에 내는지, ready가 valid나 다른 입력에 조합으로 걸리는지, 몇 개까지 보관하는지.
    SPEC의 지연(6절)을 두 모듈에 어떻게 나눴는지가 여기서 드러나야 한다. 하위 모듈이 하나면 `{{"contracts": []}}`.
+   - SPEC 6절이 고정 지연(N사이클)을 정하고 하위 모듈끼리 잇는 연결이 있으면 `"stage_budget": {{"<인스턴스>": <레지스터 단 수>, ...}}`를
+     같은 파일에 쓴다. Block Top 입력에서 출력까지 데이터가 지나는 인스턴스마다 그 안의 레지스터 단 수를 적고, 합이 N이어야 한다.
+     모듈 경계로 단을 옮기거나 경계 신호에 SPEC에 없는 레지스터를 더하지 않는다 (검사에서 합이 다르면 거부된다).
 6. `python3 tools/pl.py validate out/ir/{top}.ir.json --lib out/ir`가 `"ok": true`가 될 때까지 고친다.
    하위 모듈은 아직 동작이 없으므로 `validate`로 검사하지 않는다.
 
@@ -201,7 +206,69 @@ def packed_ports(top_ir: dict, children: dict[str, dict]) -> list[str]:
     return sorted(set(out))
 
 
-def check(block_top_l1: dict, max_modules: int | None = None):
+def dangling_instances(top_ir: dict, children: dict[str, dict]) -> list[str]:
+    """출력이 하나도 이어지지 않은 인스턴스. 결과를 아무도 받지 않으므로 배선이 빠진 것이다
+    (제공 셀을 Block Top에 두고 결과를 제어 모듈로 돌려보내지 않은 경우). 출력 일부만 쓰는 것은 허용한다."""
+    used = set()
+    for c in top_ir.get("connections", []):
+        for k in ("from", "to"):
+            inst, _, port = str(c.get(k, "")).partition(".")
+            if port:
+                used.add((inst, port))
+    out = []
+    for i in top_ir.get("instances", []):
+        child = children.get(i["module"]) or {}
+        outs, groups = [], []
+        for b in child.get("ports", []):
+            sigs = [x for x in b.get("signals", [b]) if x.get("dir") == "output"]
+            outs += [x["name"] for x in sigs]
+            if sigs and "bundle" in b:
+                groups.append(b["bundle"])
+        if outs and not any((i["name"], n) in used for n in [*outs, *groups]):
+            out.append(f"[배선] {i['name']}({i['module']})의 출력 {outs[:6]}이 하나도 이어지지 않음: 결과를 쓰는 모듈 입력이나 "
+                       f"Block Top 출력으로 잇는다")
+    return out
+
+
+def spec_latency(spec: str | Path) -> int | None:
+    """SPEC 6절 (필수) 문장이 정한 고정 지연 사이클 수. 값이 하나로 정해질 때만 돌려주고, 여러 값이거나 "구현에 따름"이면 None."""
+    from pipeline.spec.parse import parse
+    try:
+        reqs = parse(Path(spec).read_text(encoding="utf-8")).requirements
+    except OSError:
+        return None
+    vals = set()
+    for r in reqs:
+        if r.section != 6 or r.level != "필수" or "구현에 따름" in r.text or not re.search(r"지연|latency|뒤|후", r.text, re.I):
+            continue
+        vals |= {int(v) for v in re.findall(r"(\d+)\s*(?:사이클|클럭|cycles?)", r.text, re.I)}
+    vals.discard(0)
+    return vals.pop() if len(vals) == 1 else None
+
+
+def stage_budget_errors(top_ir: dict, work: Path, latency: int | None) -> list[str]:
+    """하위 모듈이 직렬로 이어지는데 SPEC이 고정 지연을 정하면, Architect가 인스턴스별 단 수를 적고 그 합이 SPEC 지연과 같아야 한다.
+    모듈 경계에서 레지스터 단이 옮겨지거나 늘어 사이클 등가가 깨지는 것을 막는다 (단일 파이프라인 연산기를 둘로 나눈 경우)."""
+    if not latency or not sibling_links(top_ir):
+        return []
+    p = Path(work) / CONTRACTS
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except json.JSONDecodeError:
+        return []                                   # contract_errors가 따로 알린다
+    budget = raw.get("stage_budget") if isinstance(raw, dict) else None
+    if not isinstance(budget, dict) or not budget:
+        return [f"[단 배분] SPEC 6절 지연이 {latency}사이클인데 {CONTRACTS}에 stage_budget(인스턴스별 레지스터 단 수)이 없음"]
+    insts = {i["name"] for i in top_ir.get("instances", [])}
+    errs = [f"[단 배분] stage_budget의 {k}는 인스턴스가 아님" for k in budget if k not in insts]
+    if not all(isinstance(v, int) and v >= 0 for v in budget.values()):
+        return errs + ["[단 배분] stage_budget 값은 0 이상의 정수"]
+    if sum(budget.values()) != latency:
+        errs.append(f"[단 배분] stage_budget 합 {sum(budget.values())} ≠ SPEC 6절 지연 {latency}사이클: 모듈 경계로 단 수를 바꾸지 않는다")
+    return errs
+
+
+def check(block_top_l1: dict, max_modules: int | None = None, latency: int | None = None):
     top = block_top_l1["module"]
 
     def _check(work: Path) -> list[str]:
@@ -223,6 +290,8 @@ def check(block_top_l1: dict, max_modules: int | None = None):
         used = {i["module"] for i in top_ir.get("instances", [])}
         errs += [f"쓰이지 않는 하위 모듈: {n}" for n in children if n not in used]
         errs += packed_ports(top_ir, children)
+        errs += dangling_instances(top_ir, children)
+        errs += stage_budget_errors(top_ir, work, latency)
         try:
             errs += contract_errors(top_ir, read_contracts(work))
         except json.JSONDecodeError as e:

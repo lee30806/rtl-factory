@@ -444,6 +444,38 @@ def prompt_param_conflicts(prompt_text: str, params: list[dict]) -> list[str]:
     return out
 
 
+_STAGE_ANNOT_RE = re.compile(r"\bstage[- ](\d{1,2})\s+(?:pipeline\s+)?(?:copy|register|value|output)", re.I)
+_FIXED_LATENCY_RE = re.compile(r"fixed[- ]latency|고정\s*지연", re.I)
+
+
+def latency_hint(prompt_text: str) -> tuple[int | None, str | None]:
+    """SPEC 6절 지연의 근거가 될 원문 단 수 (깊이, 근거). 원문이 고정 지연이라고 말하거나, 레지스터마다 단 번호를 붙여 서술할 때만.
+    단 번호 없는 `_2` 접미 이름만으로는 정하지 않는다 (파이프라인이 아닌 블록의 source_1, source_2 같은 이름)."""
+    depth, why = prompt_stage_depth(prompt_text)
+    if not depth:
+        return None, None
+    if _FIXED_LATENCY_RE.search(prompt_text) or len({m.group(1) for m in _STAGE_ANNOT_RE.finditer(prompt_text)}) >= 2:
+        return depth, why
+    return None, None
+
+
+def latency_hint_errors(spec_text: str, prompt_text: str) -> list[str]:
+    """원문이 단 수를 서술했는데 SPEC 6절이 지연을 '구현에 따름'으로 두거나 그 수를 쓰지 않으면 다시 쓰게 한다 (첫 작성 뒤 한 번).
+    값을 강제하지 않는다: 원문을 다시 대조해 다르게 정했으면 근거를 10절 LESSON에 남기면 된다."""
+    depth, why = latency_hint(prompt_text)
+    if not depth:
+        return []
+    from pipeline.spec.parse import parse
+    tim = [r for r in parse(spec_text).requirements if r.section == 6 and r.level == "필수"]
+    stated = [int(v) for r in tim if "구현에 따름" not in r.text for v in re.findall(r"(\d+)\s*(?:사이클|클럭|cycles?)", r.text)]
+    if stated and max(stated) >= depth:
+        return []
+    now = f"{max(stated)}사이클로 정함" if stated else "지연을 정하지 않음"
+    return [f"[벤치 검사] LATENCY_HINT {why}로 보면 입력에서 출력까지 최소 {depth}단인데 6절이 {now}. 원문의 단 서술을 다시 대조해 "
+            f"입력 레지스터부터 출력 레지스터까지 단을 세어 6절에 지연 사이클 수를 (필수)로 쓴다 (이 값은 하한이다). "
+            f"다르게 정하면 근거를 10절 `- Q-xx [LESSON]`에 남긴다"]
+
+
 def prompt_stage_depth(prompt_text: str) -> tuple[int | None, str | None]:
     """고정 지연 설계에서 단 번호 레지스터 나열(sign_1 ~ sign_20)이나 "N-stage pipeline"으로 파이프라인 깊이를 추정한다.
     고정 지연(fixed latency)이나 파이프라인이라는 말이 없으면 (None, None)."""
@@ -460,6 +492,11 @@ def prompt_stage_depth(prompt_text: str) -> tuple[int | None, str | None]:
     for stem, nums in stems.items():
         if len(nums) >= 3 and max(nums) > best:
             best, why = max(nums), f"prompt.txt의 단 번호 레지스터 {stem}_{min(nums)} ~ {stem}_{max(nums)}"
+    stages = {int(m.group(1)) for m in _STAGE_ANNOT_RE.finditer(prompt_text)}
+    if len(stages) >= 2:
+        n = max(stages) + (1 if min(stages) == 0 else 0)          # Stage-0 ~ Stage-2는 3단
+        if n > best:
+            best, why = n, f"prompt.txt가 단 번호를 붙인 레지스터 (Stage-{min(stages)} ~ Stage-{max(stages)})"
     return (best, why) if best else (None, None)
 
 
@@ -602,6 +639,7 @@ def bench_spec_check(top_l1: dict, prompt_text: str, top: str):
         errs += undefined_output_errors(text, top_l1)
         if calls[0] == 1:
             errs += coverage_errors(prompt_text, text, top)
+            errs += latency_hint_errors(text, prompt_text)
         return errs
     return _check
 
@@ -699,6 +737,19 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
             if m := re.search(r"^\s*`timescale\b.*$", c.read_text(encoding="utf-8", errors="replace"), re.M):
                 clean_hdr = m.group(0).strip() + "\n" + clean_hdr
                 break
+    # 헤더가 매크로를 쓰는데 그 정의가 셀의 `include에만 있으면 (ChipVerilog IF_stage의 `PC_WIDTH, mips_16_defs.v) 셀이 빠진
+    # 추출 경로(셀만 slang이 거부할 때)에서 정의가 사라진다. 셀의 `include 줄 중 헤더에 없는 것을 헤더 앞에 둔다
+    if re.search(r"`(?!timescale|include|define|ifdef|ifndef|else|elsif|endif|undef)[A-Za-z_]\w*", clean_hdr):
+        incs: list[str] = []
+        for c in cells:
+            for m in re.finditer(r'^\s*`include\s+"([^"]+)"', c.read_text(encoding="utf-8", errors="replace"), re.M):
+                ln = m.group(0).strip()
+                # 찾을 수 있는 파일만 (include 경로나 셀 옆). 못 찾는 include를 넣으면 멀쩡한 추출이 깨진다
+                found = any((d / m.group(1)).is_file() for d in [*incdirs, c.parent])
+                if found and ln not in clean_hdr and ln not in incs:
+                    incs.append(ln)
+        if incs:
+            clean_hdr = "\n".join(incs) + "\n" + clean_hdr
     (work_dir / "header.sv").write_text(clean_hdr, encoding="utf-8")
 
     # 클럭 에지·리셋 극성/동기는 프롬프트와 헤더로만 정한다. 정답 RTL(reference_rtl)에서 힌트를 뽑지 않는다 (엔진 간 공정 비교)
@@ -778,10 +829,9 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
     # 프롬프트 본문과 헤더 파라미터의 충돌, 고정 지연 설계의 단 수 힌트는 결정론적으로 찾아 작성자가 놓치지 못하게 LESSON으로 둔다
     conflicts = prompt_param_conflicts(item.prompt_text, top_l1["params"])
     lessons.extend(conflicts)
-    depth, depth_why = prompt_stage_depth(item.prompt_text)
-    fixed_latency = bool(re.search(r"fixed[- ]latency|고정\s*지연", item.prompt_text, re.I))
-    if depth and fixed_latency:
-        lessons.append(f"지연 추정: prompt.txt가 고정 지연이라 하지만 지연 수가 없어 {depth_why}로 파이프라인 깊이를 최소 {depth}단으로 보았다. "
+    depth, depth_why = latency_hint(item.prompt_text)
+    if depth:
+        lessons.append(f"지연 추정: prompt.txt에 지연 수가 없어 {depth_why}로 파이프라인 깊이를 최소 {depth}단으로 보았다. "
                        f"6절 지연은 이 값을 기준으로 쓰되 사용자가 확인해야 한다.")
     cfg_macros = config_macros(item.prompt_text, incdirs, item.defines, raw_text)
     if cfg_macros["undefined"]:
@@ -797,7 +847,7 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
         "macros": r1_res.get("macros", {}),
         "cells": [Path(c).name for c in item.cells],
         "param_conflicts": conflicts,
-        "stage_depth_hint": depth if fixed_latency else None,
+        "stage_depth_hint": depth,
         "config_macros": cfg_macros,
         "figures": [Path(f).name for f in item.attachments],
         "named_registers": named_registers(item.prompt_text, item.top),

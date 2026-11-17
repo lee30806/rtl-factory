@@ -24,6 +24,23 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 LINT_ARGS = ["-Wall", "-Wno-UNUSEDPARAM"]
+_TIMESCALE = re.compile(r"^\s*`timescale\s+(\d+\s*[munpf]?s)\s*/\s*(\d+\s*[munpf]?s)", re.M)
+
+
+def mixed_timescale(files: list[Path]) -> tuple[str, str] | None:
+    """일부 파일에만 `timescale이 있으면 그 값(첫 파일 기준)을 돌려준다. timescale 없는 모듈에 기본값으로 줘서
+    Verilator TIMESCALEMOD(-Wall에서 오류)를 경고 예외 없이 없앤다. 모두 있거나 모두 없으면 None (지금까지와 같음)."""
+    found, missing = None, False
+    for f in files:
+        try:
+            m = _TIMESCALE.search(Path(f).read_text(errors="replace"))
+        except OSError:
+            continue
+        if m:
+            found = found or (m.group(1).replace(" ", ""), m.group(2).replace(" ", ""))
+        else:
+            missing = True
+    return found if found and missing else None
 _VLT = re.compile(r"^%(Warning|Error)(?:-([A-Z0-9_]+))?: (?:(\S+?):(\d+):(?:\d+:)?\s*)?(.*)$")
 
 
@@ -67,7 +84,9 @@ def parse_verilator(text: str, tool: str = "verilator") -> list[Finding]:
 
 def lint(files: list[Path], top: str, extra_args: list[str] | None = None) -> StageResult:
     """E1. -Wall 경고도 실패로 본다 (waiver는 쓰지 않는다)."""
-    cmd = ["verilator", "--lint-only", *LINT_ARGS, *(extra_args or []), "--top-module", top, *map(str, files)]
+    ts = mixed_timescale(files)
+    cmd = ["verilator", "--lint-only", *LINT_ARGS, *(["--timescale", "/".join(ts)] if ts else []), *(extra_args or []),
+           "--top-module", top, *map(str, files)]
     p = subprocess.run(cmd, capture_output=True, text=True)
     findings = parse_verilator(p.stderr + p.stdout)
     if p.returncode != 0 and not findings:
@@ -171,6 +190,7 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     build_dir.mkdir(parents=True, exist_ok=True)
     build_log = build_dir / "build.log"
     runner = get_runner("verilator")
+    timescale = timescale or mixed_timescale(files)   # 셀에만 timescale이 있을 때 (lint와 같은 규칙)
     # IR의 SVA가 있는 RTL만 --assert로 빌드한다 (원본 RTL의 unique case 같은 검사가 새로 켜지지 않게)
     sva = any(SVA_MARK in Path(f).read_text(errors="replace") for f in files)
     # cocotb는 빌드 환경의 PYTHONPATH를 이 프로세스의 sys.path로 둔다. 빌드 중 make가 부르는 python3가 다른 버전이면

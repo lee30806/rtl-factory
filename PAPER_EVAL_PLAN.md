@@ -122,6 +122,38 @@ H3의 "손해" 쪽은 숨기지 말고 한계로 쓰는 편이 심사에서 유�
 
 공정성 관련으로, pymtl에서 지적된 "정답 RTL에서 클럭·리셋 힌트 추출"은 이 저장소에 이미 없다 (확인함).
 
+### 6.2 2차 수정 계획 (2026-11-17, `build/bench/CHIPVERILOG_IMPROVEMENTS.md` 검토 반영)
+
+근거: pymtl의 ChipVerilog 실행(gemini-3.8-flash-low, `--skip-verifier --include-defects`, 64과제 중 18과제 완료).
+이 실행은 공식 채점을 Repair 판정에 쓰는 정답 피드백 조건이고, pymtl 코드가 이 저장소보다 뒤처져 있다.
+그래서 결함마다 이 저장소의 지금 코드로 다시 확인한 뒤 고친다. 원칙은 6절과 같다: 특정 벤치마크·문제에 맞춘 규칙은 넣지 않고,
+채점기는 후보를 고치지 않으며, 정답에서 나온 정보는 본 결과의 생성 루프에 넣지 않는다.
+
+| ID | 결함 | 이 저장소 확인 결과 | 수정 | 하지 않는 것 | 완료 확인 |
+| --- | --- | --- | --- | --- | --- |
+| E1 | 외부 셀에만 `` `timescale ``이 있으면 내부 스텁 셀·방출 RTL과 섞일 때 Verilator `TIMESCALEMOD`가 `-Wall`로 실패 (pymtl fpu c1 번역기 검사) | 재현 대상. lint는 `-Wall`이고 timescale 기본값 옵션이 없다 | `pipeline/verify/run.py`의 lint·시뮬레이션 빌드와 `pyequiv` 빌드 인자에 `--timescale 1ns/1ps`(timescale 없는 모듈의 기본값)를 준다. 셀이 정한 timescale은 그대로 둔다 | `-Wno-TIMESCALEMOD` 같은 경고 예외 (lint 원칙: waiver 없음), 방출기의 `` `timescale `` 강제 삽입 | timescale 있는 셀 + 스텁 셀 + 방출 RTL 조합의 lint·pyequiv 시험 통과 |
+| E2 | 헤더가 쓰는 매크로가 제공 셀의 `` `include ``에만 있으면 헤더 추출 실패 (pymtl if_stage `PC_WIDTH`) | **이미 통과**: 셀을 헤더보다 먼저 컴파일해 셀의 include가 매크로를 정의한다. 다만 6.1 D4의 "셀이 거부되면 셀 없이 재추출" 경로에서는 매크로가 사라진다 | `extract_header_l1`이 헤더가 매크로를 참조하면 셀 파일의 `` `include `` 줄 중 헤더에 없는 것을 헤더 앞에 보충한다 (timescale 보충과 같은 방식). 재추출 경로도 같은 헤더를 쓴다 | 정답 디렉터리의 include 사용 | if_stage를 셀 없이 추출해도 포트 5개. RTLLM·ChipVerilog·RealBench 헤더 추출 결과가 이전과 같음 (6.1 D12와 같은 비교) |
+| E3 | Architect가 외부 셀을 Block Top에 두고 제어 모듈과의 배선을 빠뜨림. 셀 출력이 아무 데도 안 이어짐 (pymtl fpu) | 재현 확인 필요 (11-09 이 저장소 실행에서 fpu는 헤더 단계에서 멈춤, 6.1 D4로 해결) | Architect 종료 검사(`architect.check`)에 정적 규칙 추가: Block Top 아래 `external` 인스턴스의 출력 포트가 전부 미연결이거나, 셀 출력이 어떤 모듈 입력·Block Top 출력에도 닿지 않으면 거부하고 이유를 돌려준다. 작업 지침에 "외부 셀 출력은 결과를 쓰는 모듈 입력이나 Block Top 출력으로 잇는다"를 넣는다 | 셀 이름·과제 이름을 지침에 넣기 | 배선이 빠진 Block Top IR을 거부하는 시험, 정상 IR은 통과 |
+| E4 | Architect가 단일 파이프라인 산술기를 두 모듈로 나누면서 레지스터 단 위치가 SPEC과 어긋남 (pymtl fpu_sub) | 재현 확인 필요 | 분할 자체를 막지 않고 계약으로 검사한다: Architect `contracts`의 단 배분(모듈별 지연)의 합이 SPEC 6절 지연과 같아야 하고, 경계 신호에 SPEC에 없는 레지스터 단을 두지 않는다. 합이 다르면 Architect 게이트에서 거부한다. 지침에 "모듈 경계로 SPEC의 단 수를 바꾸지 않는다"를 넣는다 (SPEC 읽기 안내 Architect 항목에 이미 있는 원칙을 검사로 바꿈) | `standalone`이면 하위 모듈 1개로 제한 (ChipVerilog 분류에 묶인 규칙이고 계층 분해 주장과 충돌) | 6절 지연 2인 SPEC에 단 합 3인 분할을 거부하는 시험 |
+| E5 | 지연을 간접적으로만 말하는 원문에서 SpecWriter가 6절 지연을 1로 고정, 등가 채점에서 실패 (pymtl fpu_exceptions, fpu_round) | 같은 경향이 11-09 실행에도 있음 (fpu_exceptions 정답 1단, 생성 3단) | **피드백 없는 쪽에서 보강한다**: `stage_depth_hint`를 원문의 단 서술(단 번호 레지스터, "registered on the next cycle", "N-cycle latency", 단계별 처리 순서)에서 더 넓게 추정하고, 추정한 지연은 10절 [LESSON]에 근거와 함께 남긴다. SpecWriter 검사에 "원문이 레지스터 단을 서술했는데 6절 지연이 '구현에 따름'이거나 서술보다 작음"을 경고로 추가한다 | 등가 실패·증명 안 된 출력·Repair의 INTERFACE_CHANGE 진단으로 SPEC을 고치는 루프를 본 결과에 넣기 (정답 RTL과 비교해 얻은 정보라 정답 피드백이다). 넣으려면 "정답 피드백" 부록 조건으로만 돌린다 | 원문 단 서술 예시별 힌트 시험. ChipVerilog fpu 계열 SPEC의 6절 지연을 원문과 대조한 표 |
+| E6 | 공식 도구의 등가 검사 120초 시간 초과 (pymtl fpu_add) | 6.1 D7로 이제 Repair하지 않고 채점 결함으로 멈춘다 | 결과 집계에서 `equivalence_timeout`을 채점 결함 열로 따로 센다 (모든 엔진 공통) | 공식 도구 시간 제한 변경 (논문 채점 조건과 달라짐) | 요약표에 채점 결함 수 열 |
+| E7 | pymtl이 이 저장소의 수정을 갖고 있지 않음 (i2c 헤더, `clk_cnt` 클럭 오판 등) | 확인함 | 커밋 fee1140 전체와 E1~E6을 pymtl `src/rtl_factory/`에 동기화한다. 동기화 뒤 두 저장소의 `pipeline/`, `experiments/bench/` 차이가 pymtl 감싸기 계층 외에 없는지 비교한다. 에이전트 타임아웃은 기본 1500초를 쓴다 | pymtl 실험 설정의 900초 타임아웃을 결과 해석에 섞기 | 두 저장소 diff가 알려진 감싸기 계층만 남음 |
+
+순서: E1·E2(작고 독립) → E3·E4(Architect 게이트, 시험 먼저) → E5(SpecWriter 힌트) → E6(집계) → E7(동기화) → pymtl에서 ChipVerilog를
+`--prompt-source raw`와 내부 Verifier 조건(정답 피드백 없음)으로 다시 실행해 E3~E5 효과 확인. 에이전트 호출이 드는 것은 마지막 단계뿐이다.
+
+#### 6.2 진행 결과 (2026-11-17, 이 저장소)
+
+| ID | 결과 |
+| --- | --- |
+| E1 | 재현 후 수정. 일부 파일에만 `` `timescale ``이 있으면 그 값을 lint·시뮬레이션·번역기 검사 빌드의 `--timescale` 기본값으로 준다 (`verify.run.mixed_timescale`). 모두 있거나 모두 없으면 지금과 같다. 경고 예외는 쓰지 않음 |
+| E2 | 헤더가 매크로를 쓰면 셀의 찾을 수 있는 `` `include `` 줄을 헤더 앞에 둔다. if_stage는 셀 없이도 같은 포트. 세 벤치 헤더 추출 결과는 or1200_top(이미 결함 표시) 오류 줄 번호만 바뀜 |
+| E3 | Architect 검사 `dangling_instances`: 출력이 하나도 이어지지 않은 인스턴스를 거부. 작업 지침에 배선 규칙 추가 |
+| E4 | Architect 검사 `stage_budget_errors`: SPEC 6절이 고정 지연 N을 정하고 하위 모듈끼리 연결이 있으면 `contracts.json`의 `stage_budget` 합이 N이어야 한다. 기존 ChipVerilog·RTLLM SPEC 114개는 6절이 지연을 하나로 정하지 않아 이 검사가 켜지지 않음 (오거부 없음) |
+| E5 | `latency_hint`: 고정 지연 문구 또는 레지스터의 Stage-N 표기로 최소 단 수를 추정 (fpu_exceptions 3, fpu_mul 9, fpu_addsub_pipeline 22, fpu_mul_pipeline 21, or1200_mult_mac 3). 정답 확인 결과 하한이 맞음 (fpu_exceptions 정답은 out_0~out_2 + out = 4단). SpecWriter 첫 작성 검사 `LATENCY_HINT`는 6절이 지연을 정하지 않거나 하한보다 작을 때만 다시 쓰게 한다 (값 강제 없음) |
+| E6 | `summary.json` `counts.grader_defect_items`와 요약표 줄 추가 |
+| E7 | pymtl `src/rtl_factory/`에 `pipeline/`, `experiments/bench/`(→ `bench/`), `docs/`, `config/` 동기화 (18개 파일). 마지막 동기화(d53a5e5) 이후 pymtl 고유 수정은 `bench/run_bench.py`의 경로 설정뿐이라 그대로 유지. 동기화 뒤 차이는 그 파일뿐. pymtl에서 ChipVerilog 원문 입력·자체 검사 TB 12개·i2c 헤더 복원·리셋 판정 동작 확인. pymtl 커밋은 하지 않음 |
+
 ## 7. 일정 (순서와 완료 기준)
 
 | 단계 | 작업 | 완료 기준 | 예상 비용 |

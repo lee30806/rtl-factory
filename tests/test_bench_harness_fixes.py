@@ -164,3 +164,86 @@ def test_header_directives_go_to_top_file_end_not_grader(tmp_path: Path):
     assert with_directives(body, False, "`define W 16") == body and with_directives(body, True, "") == body
     src = (ROOT / "experiments" / "bench" / "adapters" / "chipverilog.py").read_text(encoding="utf-8")
     assert "hdr_defs" not in src                       # 채점기는 후보를 고치지 않는다
+
+
+# --- 6.2 2차 수정 (E1~E6) ---
+
+def test_mixed_timescale_gets_default_without_waiver(tmp_path: Path):
+    """셀에만 `timescale이 있으면 그 값을 timescale 없는 모듈의 기본값으로 줘 TIMESCALEMOD를 없앤다 (경고 예외 없이). E1"""
+    import shutil
+    from pipeline.verify.run import LINT_ARGS, lint, mixed_timescale
+    (tmp_path / "cellx.v").write_text("`timescale 1ns / 100ps\nmodule cellx(input a, output y); assign y = a; endmodule\n")
+    (tmp_path / "top.sv").write_text("module top(input a, output y); cellx u(.a(a), .y(y)); endmodule\n")
+    files = [tmp_path / "top.sv", tmp_path / "cellx.v"]
+    assert mixed_timescale(files) == ("1ns", "100ps") and mixed_timescale(files[:1]) is None
+    assert "-Wno-TIMESCALEMOD" not in LINT_ARGS
+    if shutil.which("verilator"):
+        assert lint(files, "top").ok
+
+
+@needs_cv
+def test_header_gets_cell_includes_when_macros_used(tmp_path: Path):
+    """헤더가 매크로를 쓰면 셀의 찾을 수 있는 `include를 헤더 앞에 둔다: 셀 없이 추출해도 같은 포트. E2"""
+    from experiments.bench.common.to_spec import extract_header_l1
+    it = next(i for i in cv.load_chipverilog(CV_JSONL, tmp_path / "src") if "if_stage" in i.id)
+    with_cells = [p["name"] for p in extract_header_l1(it, tmp_path / "a")[0]["ports"]]
+    it.cells = []
+    assert [p["name"] for p in extract_header_l1(it, tmp_path / "b")[0]["ports"]] == with_cells
+
+
+def _tree(conns):
+    top = {"module": "t", "role": "block_top", "instances": [{"name": "u_a", "module": "a"}, {"name": "u_b", "module": "b"}],
+           "connections": conns}
+    kids = {m: {"module": m, "role": "module", "ports": [{"name": "i", "dir": "input", "type": "logic"},
+                                                          {"name": "o", "dir": "output", "type": "logic"}]} for m in ("a", "b")}
+    return top, kids
+
+
+def test_architect_rejects_instance_with_no_connected_output():
+    from pipeline.agents.architect import dangling_instances
+    top, kids = _tree([{"from": "self.x", "to": "u_a.i"}, {"from": "u_a.o", "to": "u_b.i"}, {"from": "self.x", "to": "u_b.i"}])
+    errs = dangling_instances(top, kids)
+    assert len(errs) == 1 and "u_b" in errs[0]                                  # u_b의 결과를 아무도 받지 않음 (E3)
+    top["connections"].append({"from": "u_b.o", "to": "self.y"})
+    assert dangling_instances(top, kids) == []
+
+
+def test_stage_budget_must_match_spec_latency(tmp_path: Path):
+    """모듈 경계로 단 수를 바꾸지 않는다: 직렬 연결이 있고 SPEC 6절이 고정 지연을 정하면 stage_budget 합 = 지연. E4"""
+    from pipeline.agents.architect import CONTRACTS, spec_latency, stage_budget_errors
+    spec = tmp_path / "spec.md"
+    spec.write_text("# t SPEC\n\n## 6. 타이밍과 성능\n\n- TIM-01 (필수) 입력을 받은 에지부터 3사이클 뒤 출력이 바뀐다.\n", encoding="utf-8")
+    assert spec_latency(spec) == 3
+    spec.write_text("# t SPEC\n\n## 6. 타이밍과 성능\n\n- TIM-01 (필수) 지연은 구현에 따름(검증하지 않음).\n", encoding="utf-8")
+    assert spec_latency(spec) is None
+    top, _ = _tree([{"from": "self.x", "to": "u_a.i"}, {"from": "u_a.o", "to": "u_b.i"}, {"from": "u_b.o", "to": "self.y"}])
+    (tmp_path / CONTRACTS).parent.mkdir(parents=True, exist_ok=True)
+    assert "stage_budget" in stage_budget_errors(top, tmp_path, 3)[0]
+    (tmp_path / CONTRACTS).write_text(json.dumps({"contracts": [], "stage_budget": {"u_a": 2, "u_b": 2}}))
+    assert "≠" in stage_budget_errors(top, tmp_path, 3)[0]
+    (tmp_path / CONTRACTS).write_text(json.dumps({"contracts": [], "stage_budget": {"u_a": 2, "u_b": 1}}))
+    assert stage_budget_errors(top, tmp_path, 3) == [] and stage_budget_errors(top, tmp_path, None) == []
+
+
+def test_latency_hint_is_a_lower_bound_from_stage_annotations():
+    """원문이 레지스터에 Stage-N을 붙이면 최소 단 수를 힌트로 주고, 6절이 정하지 않거나 더 작으면 다시 쓰게 한다. 같거나 크면 통과. E5"""
+    from experiments.bench.common.to_spec import latency_hint, latency_hint_errors
+    prompt = "reg out_0: Stage-0 pipeline copy of the output.\nreg out_1: Stage-1 pipeline copy of the output.\n"
+    assert latency_hint(prompt)[0] == 2
+    assert latency_hint("source_1, source_2, source_3 feed the pipeline hazard check")[0] is None   # 단 번호 없는 접미만으로는 정하지 않음
+    head = "# t SPEC\n\n## 6. 타이밍과 성능\n\n"
+    assert latency_hint_errors(head + "- TIM-01 (필수) 지연은 구현에 따름(검증하지 않음).\n", prompt)
+    assert latency_hint_errors(head + "- TIM-01 (필수) 입력 뒤 1사이클에 출력한다.\n", prompt)
+    assert latency_hint_errors(head + "- TIM-01 (필수) 입력 뒤 3사이클에 출력한다.\n", prompt) == []
+
+
+def test_summary_counts_grader_defect_items():
+    from experiments.bench.common.metrics import summarize
+    from experiments.bench.common.schema import BenchResult
+    bad = BenchResult("chipverilog", "a", "s", "a", True, candidates={
+        "c0": {"bench_eval": {"ok": False, "status": "equivalence_error", "grader_defect": "x"}},
+        "c1": {"bench_eval": {"ok": False, "status": "equivalence_timeout", "grader_defect": "y"}}})
+    mixed = BenchResult("chipverilog", "b", "s", "b", True, candidates={
+        "c0": {"bench_eval": {"ok": False, "status": "equivalence_error", "grader_defect": "x"}},
+        "c1": {"bench_eval": {"ok": False, "status": "function_fail", "grader_defect": ""}}})
+    assert summarize([bad, mixed])["counts"]["grader_defect_items"] == 1

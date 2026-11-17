@@ -8,6 +8,12 @@ from typing import Any
 from experiments.bench.common.schema import BenchResult
 
 
+def _all_grader_defect(r) -> bool:
+    evals = [c.get("bench_eval") or {} for c in r.candidates.values()]
+    evals = [e for e in evals if e.get("status") or e.get("stage")]
+    return bool(evals) and all(e.get("grader_defect") for e in evals)
+
+
 def summarize(results: list[BenchResult]) -> dict[str, Any]:
     total = len(results)
     if total == 0:
@@ -29,6 +35,8 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
     chosen_final = sum(1 for r in results if r.bench_pass_chosen or r.bench_pass_chosen_final)
     any_final = sum(1 for r in results if r.bench_pass_any or r.bench_pass_any_final)
     ext_fixed = sum(1 for r in results if r.ext_fix)
+    # 채점 환경이 판정하지 못한 문제 (통과 후보 없이, 채점까지 간 후보가 모두 등가 도구 오류·시간 초과·정답 결함). 엔진 성능과 따로 센다
+    grader_defect = sum(1 for r in results if not r.bench_pass_any and _all_grader_defect(r))
 
     lang_stats: dict[str, dict[str, Any]] = {}
     for r in results:
@@ -62,6 +70,7 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
             "bench_pass_chosen_final": chosen_final,
             "bench_pass_any_final": any_final,
             "ext_fix_items": ext_fixed,
+            "grader_defect_items": grader_defect,
         },
         "rates": {
             "spec_gate_pass": round(spec_ok / total, 4),
@@ -153,6 +162,7 @@ def write_summary(results: list[BenchResult], out_dir: Path) -> dict[str, Any]:
         f"- **Bench Pass (any candidate)**: {summary.get('counts', {}).get('bench_pass_any', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_any', 0) * 100:.1f}%)",
         f"- **최종 (golden, 외부 TB 보정 뒤)**: {summary.get('counts', {}).get('bench_pass_chosen_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_chosen_final', 0) * 100:.1f}%)"
         f" — 보정한 문제 {summary.get('counts', {}).get('ext_fix_items', 0)}개. 외부 TB를 통과한 후보를 golden으로 고르고 외부 TB를 근거로 Repair·SPEC 보정을 한 결과라 pass@1이 아님",
+        f"- **채점 환경 결함 (통과 후보 없이 모든 판정이 도구 오류·시간 초과·정답 결함)**: {summary.get('counts', {}).get('grader_defect_items', 0)}/{summary['total']}",
         f"- **외부 TB 보정 뒤 (any candidate)**: {summary.get('counts', {}).get('bench_pass_any_final', 0)}/{summary['total']} ({summary.get('rates', {}).get('bench_pass_any_final', 0) * 100:.1f}%)",
         f"- **시뮬레이션 모델 (합성, PPA 없음)**: {sum(r.sim_model for r in results)}/{summary['total']}",
         "",
