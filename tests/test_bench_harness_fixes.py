@@ -247,3 +247,89 @@ def test_summary_counts_grader_defect_items():
         "c0": {"bench_eval": {"ok": False, "status": "equivalence_error", "grader_defect": "x"}},
         "c1": {"bench_eval": {"ok": False, "status": "function_fail", "grader_defect": ""}}})
     assert summarize([bad, mixed])["counts"]["grader_defect_items"] == 1
+
+
+def test_clock_reset_from_code_annotations_and_port_lines():
+    """클럭·리셋은 쓰임새(감응 목록, 헤더 주석, 포트 설명 첫 마디)로 먼저 찾고 이름은 마지막 수단이다."""
+    from experiments.bench.common.to_spec import CLK_RE, RST_RE, clock_reset_evidence
+    code = "always @(posedge clk or negedge rst_n) begin : P\n if (rst_n == 1'b0) q <= 0; else q <= d; end"
+    ev = clock_reset_evidence(["rst_n", "d"], "", [code])               # 셀의 clk는 최상위 포트가 아니어도 rst_n은 리셋
+    assert ev["resets"] == {"rst_n": {"active": "low", "async": True}} and ev["clocks"] == {}
+    ev = clock_reset_evidence(["hclk", "hrst"], "", ["always @(posedge hclk) if (hrst) q <= 0;"])
+    assert ev["clocks"] == {"hclk": "pos"} and ev["resets"]["hrst"] == {"active": "high", "async": False}
+    # 본문 없는 예시 감응 목록은 어느 것이 리셋인지 몰라 쓰지 않는다
+    assert clock_reset_evidence(["clk", "rst"], "Use `always @(posedge clk or negedge rst)`). - State", [])["clocks"] == {}
+    hdr = "endmodule\n// @clock pclk posedge\n// @reset presetn active-low async\n"
+    ev = clock_reset_evidence(["pclk", "presetn"], "", [], hdr)
+    assert ev["clocks"] == {"pclk": "pos"} and ev["resets"]["presetn"] == {"active": "low", "async": True}
+    prose = ("Inputs:\n    sys_c: System clock.\n    rb: Asynchronous active-low reset.\n"
+             "    scl_i: External I2C SCL clock line input.\n    ena: Core enable. Cleared by reset.\n")
+    ev = clock_reset_evidence(["sys_c", "rb", "scl_i", "ena"], prose)
+    assert set(ev["clocks"]) == {"sys_c"} and set(ev["resets"]) == {"rb"}
+    assert all(CLK_RE.search(n) for n in ("pclk", "hclk", "aclk")) and all(RST_RE.search(n) for n in ("presetn", "hresetn"))
+    assert not RST_RE.search("preset")                                    # 값 적재 신호와 구분
+
+
+def test_reset_lesson_matches_final_judgment(tmp_path: Path):
+    """헤더 주석이 비동기 리셋을 정하면 '동기로 정했다' 같은 문장 추정 LESSON을 남기지 않는다."""
+    from experiments.bench.common.schema import BenchItem
+    from experiments.bench.common.to_spec import extract_header_l1
+    hdr = ("module t (input pclk, input presetn, input [7:0] d, output reg [7:0] q);\nendmodule\n"
+           "// @clock pclk posedge\n// @reset presetn active-low async\n")
+    l1, _, notes = extract_header_l1(BenchItem("cvdp", "t", "cid003", "t", "A register.", hdr), tmp_path)
+    assert l1["domains"][0]["reset"] == {"port": "presetn", "active": "low", "async": True}
+    resets = [x for x in notes["lessons"] if "presetn" in x]
+    assert resets and all("비동기" in x and "동기로 정했다" not in x for x in resets)
+
+
+def test_prompt_doc_structure_reset_extraction_and_domain_refine(tmp_path: Path):
+    """완성된 RTL이 없을 때 마크다운 문서 블록·자연어 문장에서 클럭/리셋 구조를 추출하고, SpecWriter의 2절 리셋 속성 보정을 허용한다."""
+    from experiments.bench.common.schema import BenchItem
+    from experiments.bench.common.to_spec import extract_header_l1, infer_reset_and_clock_traits
+    from pipeline.agents import spec_writer
+    from pipeline.importer import spec_tables
+    from pipeline.spec.l1 import block_top_l1
+    from pipeline.spec.parse import load as load_spec
+
+    # 1) RealBench 마크다운 블록 ("**Reset:`RST`**\n- Type: Asynchronous\n- Active Level: High (`1`)")
+    rb_crc = (
+        "## Interface\n- CLK (input): Clock.\n- RST (input): The reset signal. When asserted high (1), initializes CRC.\n"
+        "## Clock and Reset\n**Clock :`CLK`**\n- Type: Synchronous\n\n**Reset:`RST`**\n- Type: Asynchronous\n- Active Level: High (`1`)\n"
+    )
+    lessons: list[str] = []
+    assert infer_reset_and_clock_traits(rb_crc, "CLK", "RST", lessons=lessons) == ("pos", "high", True)
+    assert lessons == []
+
+    # 2) 마크다운 강조("**asynchronous** reset method") 및 무관한 포트의 "active low" 오염 방지
+    rb_wb = "This module uses a synchronous design and an **asynchronous** reset method. When `wb_rst_i` is asserted, it resets."
+    assert infer_reset_and_clock_traits(rb_wb, "wb_clk_i", "wb_rst_i", lessons=lessons) == ("pos", "high", True)
+    rb_sd = "Data start bit is active low.\n**Reset Condition (`rst` High)**:\n**Normal Operation (`rst` Low)**:\n"
+    assert infer_reset_and_clock_traits(rb_sd, "sd_clk", "rst")[1] == "high"
+
+    # 3) RTLLM traffic_light / calendar / freq_divbyfrac / LFSR 자연어 문장
+    tl = "rst_n: Reset signal (active low).\nThe counter is decremented by 1 on every positive edge of the clock or negative edge of the reset signal."
+    assert infer_reset_and_clock_traits(tl, "clk", "rst_n", lessons=lessons) == ("pos", "low", True)
+    assert infer_reset_and_clock_traits("The active low reset signal rst_n asynchronously initializes the counter.", "clk", "rst_n") == ("pos", "low", True)
+    assert infer_reset_and_clock_traits("On the rising edge of the clock (clk), if the reset (rst) is high, clear.", "clk", "rst", lessons=lessons) == ("pos", "high", False)
+    assert lessons == []
+
+    # 4) 완성된 RTL 코드가 있는 경우(조합 assign 포함) 더미 순차 블록을 주입하지 않고 코드 구조 그대로 반환
+    from experiments.bench.common.to_spec import _inject_dummy_seq_if_empty
+    comb_rtl = "module comb_m(input clk, input rst, input a, output y);\n  assign y = a;\nendmodule\n"
+    (tmp_path / "comb").mkdir(exist_ok=True)
+    aug = _inject_dummy_seq_if_empty(comb_rtl, "comb_m", rb_crc, [], {}, {}, tmp_path / "comb")
+    assert "always" not in aug.read_text(encoding="utf-8")
+
+    # 5) interface_diff 및 allow_domain_refine: 외부 포트·파라미터는 고정하되 2절 리셋 동기/극성 변경은 허용
+    base_spec = ROOT / "tests" / "golden" / "axis_cobs_decode" / "block_spec.md"
+    ir = json.loads((ROOT / "tests" / "golden" / "axis_cobs_decode" / "ir" / "axis_cobs_decode.ir.json").read_text())
+    head, rest = base_spec.read_text().split("\n## 2.", 1)
+    async_md = spec_tables.tables_md(ir).replace("| high | 동기 |", "| high | 비동기 |")
+    spec_text = head + "\n" + async_md + rest[rest.index("\n## 5."):].replace("rst=1을 본 다음 사이클부터", "rst=1인 동안")
+    p = tmp_path / "refined.md"
+    p.write_text(spec_text, encoding="utf-8")
+    assert spec_writer.gate(p, ir, allow_domain_refine=False) != []
+    assert spec_writer.gate(p, ir, allow_domain_refine=True) == []
+    bad_port = tmp_path / "bad_port.md"
+    bad_port.write_text(spec_text.replace("| sys | clk |", "| sys | clk2 |", 1), encoding="utf-8")
+    assert any(e.startswith("[2~4절]") for e in spec_writer.gate(bad_port, ir, allow_domain_refine=True))

@@ -106,6 +106,35 @@ def roundtrip_diff(ir_l1: dict, spec_l1: dict) -> list[str]:
     return out
 
 
+def interface_ports(l1: dict) -> dict[str, dict]:
+    """L1의 전체 외부 핀 인터페이스(2절 클럭·리셋 포트 + 3절 일반/번들 포트): {포트 이름: {"dir": 방향, "type": 타입}}."""
+    out: dict[str, dict] = {}
+    for d in l1.get("domains", []):
+        if d.get("clock"):
+            out[d["clock"]] = {"dir": "input", "type": "logic"}
+        r = d.get("reset") or {}
+        for p in ([r["port"], *(x["port"] for x in r.get("extra", []))] if r.get("port") else []):
+            out.setdefault(p, {"dir": "input", "type": "logic"})
+    for p in l1.get("ports", []):
+        for s in (p["signals"] if "bundle" in p else [p]):
+            out[s["name"]] = {"dir": s["dir"], "type": s["type"]}
+    return out
+
+
+def interface_diff(header_l1: dict, spec_l1: dict) -> list[str]:
+    """헤더만 있는 벤치·자연어 명세용 비교: 모듈 이름, 파라미터(4절), 전체 외부 포트 집합(이름·방향·타입)만 헤더와 대조하고
+    2절 클럭·리셋 도메인 속성(동기/비동기, 극성, 에지, 조합/순차 구분)은 자연어 명세에서 확정한 값을 허용한다."""
+    a, b = comparable(header_l1), comparable(spec_l1)
+    out = []
+    for k in ("module", "params"):
+        if a.get(k) != b.get(k):
+            out.append(f"{k}: IR {a.get(k)!r} / SPEC {b.get(k)!r}")
+    pa, pb = interface_ports(a), interface_ports(b)
+    if pa != pb:
+        out.append(f"ports: IR {pa!r} / SPEC {pb!r}")
+    return out
+
+
 def tables_md(l1: dict) -> str:
     """SPEC 2~4절 (제목 포함). SpecWriter가 그대로 넣는다."""
     return (f"## 2. 클럭, 리셋, 전력\n\n{section2(l1)}\n\n## 3. 인터페이스\n\n{section3(l1)}\n\n"

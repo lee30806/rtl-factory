@@ -68,7 +68,7 @@ TASK = """\
 
 ## 규칙
 - `{out}`, `{changes}` 외의 파일은 만들거나 고치지 않는다.
-- 2~4절은 `tables.md` 그대로 둔다. 포트, 파라미터, 클럭과 리셋은 바꾸지 않는다.
+- 3절의 포트(이름·방향·타입)와 4절의 파라미터는 `tables.md` 그대로 둔다. 단, 외부 테스트벤치나 `prompt.txt`가 2절의 리셋 동기(`동기`/`비동기`)나 리셋 극성(`high`/`low`)을 다르게 기대하는 경우에는 2절 표의 리셋 동기·극성도 함께 고친다.
 - 요구사항은 포트에서 관찰되는 값과 사이클로 쓴다. 후보 RTL의 코드 구조를 옮기지 않는다. 내부 구조는 `prompt.txt`가 명시한 것만 쓴다.
 - 외부 테스트벤치와 관계없는 요구사항은 바꾸지 않는다.
 """
@@ -98,7 +98,7 @@ def make_task(item: BenchItem, trigger: str, spec_path: Path, tables: str, heade
 
 def check(top_l1: dict, prev_text: str):
     """SPEC 게이트, SPEC이 바뀌었는지, 수정 사유(changes.json)와 재검토 알람이 있는지."""
-    spec_check = spec_writer.check(top_l1, prev_text)
+    spec_check = spec_writer.check(top_l1, prev_text, allow_domain_refine=True)
 
     def _check(work: Path) -> list[str]:
         errs = spec_check(work)
@@ -151,7 +151,13 @@ def revise_spec(item: BenchItem, work_dir: Path, trigger: str, spec_path: Path, 
     out.write_text(with_prompt_appendix(Path(res.outputs[OUT]).read_text(encoding="utf-8"), item.prompt_text), encoding="utf-8")
     changes = json.loads(Path(res.outputs[CHANGES]).read_text(encoding="utf-8"))
     (work_dir / "changes.json").write_text(json.dumps(changes, ensure_ascii=False, indent=1), encoding="utf-8")
-    errs = spec_writer.gate(out, top_l1)
+    errs = spec_writer.gate(out, top_l1, allow_domain_refine=True)
+    if not errs:
+        from pipeline.importer import spec_tables
+        from pipeline.spec.l1 import block_top_l1
+        final_l1, _ = block_top_l1(load_spec(out))
+        (work_dir / "top.l1.json").write_text(json.dumps(final_l1, ensure_ascii=False, indent=2), encoding="utf-8")
+        (work_dir / "tables.md").write_text(spec_tables.tables_md(final_l1), encoding="utf-8")
     return (out if not errs else None), changes, errs, res
 
 

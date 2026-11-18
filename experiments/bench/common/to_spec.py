@@ -17,25 +17,165 @@ from pipeline.importer.sources import Design, Inputs
 TEMPLATE = ROOT / "docs" / "SPEC 작성 템플릿.md"
 OUT = "out/spec.md"
 
-CLK_RE = re.compile(r"(?:^|_|w|r)(clk|clock)(?:$|_|\d|[a-z])", re.I)
-RST_RE = re.compile(r"(?:^|_|w|r|a|b|n)(a?rst_?n?|a?reset_?n?|clr|clear)(?:$|_|\d)", re.I)
+# 앞 글자 하나 붙은 버스 클럭(pclk, hclk, aclk)도 클럭 이름으로 본다. 1비트 입력 포트에만 쓴다
+CLK_RE = re.compile(r"(?:^[a-z]?|_|w|r)(clk|clock)(?:$|_|\d|[a-z])", re.I)
+# 앞 글자 하나 붙은 버스 리셋(presetn, hresetn)은 n으로 끝날 때만 (preset 같은 값 적재 신호와 구분)
+RST_RE = re.compile(r"(?:^|_|w|r|a|b|n)(a?rst_?n?|a?reset_?n?|clr|clear)(?:$|_|\d)|^[a-z](?:rst|reset)_?n$", re.I)
+
+
+_SENS_RE = re.compile(r"\balways(?:_ff|_latch)?\s*@\s*\(([^)]*)\)")
+_EDGE_RE = re.compile(r"\b(posedge|negedge)\s+([A-Za-z_]\w*)")
+_ANNOT_CLK = re.compile(r"//\s*@clock\s+([A-Za-z_]\w*)(?:\s+(posedge|negedge))?", re.I)
+_ANNOT_RST = re.compile(r"//\s*@reset\s+([A-Za-z_]\w*)((?:\s+[\w-]+)*)", re.I)
+
+
+def _strip_md(text: str) -> str:
+    """마크다운 강조·인라인 코드 기호(`*`, `` ` ``)만 제거하고 식별자 밑줄(`_`)은 보존한다."""
+    return re.sub(r"[*`]+", "", text)
+
+
+def clock_reset_evidence(ports: list[str], prompt_text: str, code_texts: list[str] = (), header_raw: str = "") -> dict:
+    """이름이 아니라 쓰임새로 클럭·리셋을 찾는다.
+    - 완성된 RTL 코드(`code_texts`)가 있는 경우: 코드의 감응 목록(`always @(posedge X or negedge Y)`)과 첫 if 조건에서 정규식으로 추출한다.
+    - 완성된 RTL 코드가 없는 경우: 헤더 주석(`// @clock`, `// @reset`)과 자연어 프롬프트·문서의 포트 설명 구조(`port_line`, `port_doc_blocks`)에서 추출한다.
+    정답 RTL과 테스트벤치는 보지 않는다. ports는 1비트 입력 포트.
+    → {"clocks": {포트: "pos"|"neg"}, "resets": {포트: {"active": "low"|"high"|None, "async": bool|None}}, "why": {포트: 근거}}"""
+    clocks: dict[str, str] = {}
+    resets: dict[str, dict] = {}
+    why: dict[str, str] = {}
+    pset = set(ports)
+    for m in _ANNOT_CLK.finditer(header_raw):
+        if m.group(1) in pset:
+            clocks[m.group(1)] = "neg" if (m.group(2) or "").lower() == "negedge" else "pos"
+            why[m.group(1)] = "헤더 주석 @clock"
+    for m in _ANNOT_RST.finditer(header_raw):
+        if m.group(1) in pset and m.group(1) not in clocks:
+            words = m.group(2).lower()
+            resets[m.group(1)] = {"active": "low" if "low" in words else ("high" if "high" in words else None),
+                                  "async": True if "async" in words else (False if "sync" in words else None)}
+            why[m.group(1)] = "헤더 주석 @reset"
+    # 감응 목록 정규식은 완성된 RTL 코드(code_texts)에만 적용한다 (자연어 프롬프트의 예시 문구는 코드가 아님)
+    for text in code_texts:
+        text = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", text, flags=re.S))
+        for m in _SENS_RE.finditer(text):
+            # 클럭·리셋 구분은 감응 목록 전체로 하고, 결과는 최상위 포트와 이름이 같은 신호에만 쓴다
+            # (셀의 클럭 이름이 최상위와 달라도 리셋 이름만 같을 수 있다: e203 셀의 clk + rst_n)
+            edges = _EDGE_RE.findall(m.group(1))
+            if not any(n in pset for _, n in edges):
+                continue
+            cond = re.match(r"\s*(?:begin\b\s*(?::\s*\w+)?)?\s*if\s*\(\s*(!|~)?\s*([A-Za-z_]\w*)", text[m.end():m.end() + 400])
+            if len(edges) > 1 and not (cond and cond.group(2) in {n for _, n in edges}):
+                continue
+            rst = cond.group(2) if cond and len(edges) > 1 else None
+            for e, n in edges:
+                if n not in pset:
+                    continue
+                if n == rst:
+                    if n not in resets:
+                        resets[n] = {"active": "low" if e == "negedge" else "high", "async": True}
+                        why.setdefault(n, "감응 목록의 비동기 리셋")
+                elif n not in resets:
+                    clocks.setdefault(n, "neg" if e == "negedge" else "pos")
+                    why.setdefault(n, "감응 목록의 에지")
+            if cond and not rst and len(edges) == 1 and cond.group(2) in pset and cond.group(2) not in clocks \
+                    and re.search(r"rst|reset|clr|clear", cond.group(2), re.I) and cond.group(2) not in resets:
+                resets[cond.group(2)] = {"active": "low" if cond.group(1) else "high", "async": False}
+                why[cond.group(2)] = "클럭 블록 첫 조건의 동기 리셋"
+    for n in ports:
+        ln = port_line(prompt_text, n).lower()
+        if not ln or n in clocks or n in resets:
+            continue
+        # 설명의 첫 마디가 이 포트를 클럭·리셋이라고 말할 때만 ("System clock.", "Asynchronous active-low reset.").
+        # 문장 어딘가에 clock·reset이 나오는 것(SCL clock line, 리셋 뒤 값)은 근거로 보지 않는다
+        head = re.split(r"[.,;:(]", ln, maxsplit=1)[0].strip()
+        head_words = head.split()
+        if len(head_words) <= 6 and head_words and re.fullmatch(r"clock|clk", head_words[-1]) \
+                and not re.search(r"enable|gate|gating|count|divid|select|line|pad|output|domain", head):
+            clocks[n] = "neg" if re.search(r"falling|negative", ln) else "pos"
+            why[n] = "포트 설명 줄"
+        elif len(head_words) <= 6 and head_words and re.fullmatch(r"reset|clear", head_words[-1]):
+            a, s = port_reset_traits(prompt_text, n)
+            resets[n] = {"active": a, "async": s}
+            why[n] = "포트 설명 줄"
+    return {"clocks": clocks, "resets": resets, "why": why}
 
 
 def port_line(prompt_text: str, port: str) -> str:
-    """프롬프트의 포트 설명 줄 (`    nReset: Asynchronous active-low reset. ...`). ChipVerilog·RTLLM 원문의 포트 절 형식. 없으면 ""."""
-    m = re.search(rf"^[ \t]*(?:(?:input|output|inout)\s+)?(?:reg\s+|wire\s+)?{re.escape(port)}\s*(?:\[[^\]]*\])?\s*:\s*(.+)$",
-                  prompt_text, re.M)
-    return m.group(1) if m else ""
+    """프롬프트의 포트 설명 줄 (`    nReset: Asynchronous active-low reset.`, `- RST (input): ...`, `- `wb_rst_i`: ...`). 없으면 ""."""
+    p = re.escape(port)
+    m = re.search(
+        rf"^[ \t]*(?:[-*+]|\d+\.)?[ \t]*(?:(?:input|output|inout)\s+)?(?:reg\s+|wire\s+)?[*`]*{p}[*`]*"
+        rf"(?:\s*\((?:input|output|inout)[^)]*\))?(?:\s*\[[^\]]*\])?\s*:\s*(.+)$",
+        prompt_text,
+        re.M | re.I,
+    )
+    return _strip_md(m.group(1)).strip() if m else ""
+
+
+def port_doc_blocks(prompt_text: str, port: str) -> list[str]:
+    """자연어 문서·마크다운에서 특정 포트를 설명하는 구조적 단락(포트 설명 줄, 마크다운 표 행, 포트 제목/볼드 블록)을 추출한다."""
+    p = re.escape(port)
+    out: list[str] = []
+    if ln := port_line(prompt_text, port):
+        out.append(ln)
+    for m in re.finditer(rf"^[ \t]*[-*+][ \t]*[*`]*(?:reset|clock)(?:\s+signal)?[*`]*\s*:\s*[*`]*{p}[*`]*\b([^\n]*)$", prompt_text, re.M | re.I):
+        out.append(_strip_md(m.group(1)).strip())
+    for m in re.finditer(rf"^\s*\|(?:[^|\n]*\|)*?\s*[*`]*{p}[*`]*\s*\|[^\n]*$", prompt_text, re.M):
+        out.append(_strip_md(m.group(0)).strip())
+    for m in re.finditer(
+        rf"^\s*\*\*[^\n*]*\b{p}\b[^\n*]*\*\*:?[ \t]*\n((?:[ \t]*\n|[ \t]*[-*+][^\n]+\n)+)",
+        prompt_text,
+        re.M,
+    ):
+        out.append(_strip_md(m.group(0)).strip())
+    for m in re.finditer(rf"^\s*\*\*[^\n*]*\breset\s+condition\b[^\n*]*\b{p}\b[^\n*]*\*\*:?", prompt_text, re.M | re.I):
+        out.append(_strip_md(m.group(0)).strip())
+    for m in re.finditer(
+        rf"^#{{2,4}}[ \t]*(?:reset|clock)\b[^\n]*\n+((?:[ \t]*\n|[ \t]*[-*+][^\n]+\n)+)",
+        prompt_text,
+        re.M | re.I,
+    ):
+        blk = _strip_md(m.group(0)).strip()
+        if re.search(rf"\b{p}\b", blk):
+            out.append(blk)
+    return out
+
+
+def _parse_reset_traits_text(text: str, port: str = "") -> tuple[str | None, bool | None]:
+    t = _strip_md(text).lower()
+    p = re.escape(port.lower()) if port else r"\w+"
+    low = bool(re.search(
+        rf"active[- ]low|low[- ]active|active\s+level\s*:\s*low|asserted\s+low|reset\s+condition\s*\([^)]*\b{p}\s+low\b"
+        rf"|\bwhen\s+{p}\s+is\s+(?:asserted\s+)?low\b",
+        t,
+    ))
+    high = bool(re.search(
+        rf"active[- ]high|high[- ]active|active\s+level\s*:\s*high|asserted\s+high|reset\s+condition\s*\([^)]*\b{p}\s+high\b"
+        rf"|\bwhen\s+{p}\s+is\s+(?:asserted\s+)?high\b",
+        t,
+    ))
+    active = "low" if (low and not high) else ("high" if (high and not low) else None)
+    is_async = (
+        True
+        if re.search(r"\basynchronous(?:ly)?\b|type\s*:\s*asynchronous|immediately\s+resets?[^.\n]*regardless\s+of\s+(?:the\s+)?clock", t)
+        else (False if re.search(r"\bsynchronous(?:ly)?\b|type\s*:\s*synchronous", t) else None)
+    )
+    return active, is_async
 
 
 def port_reset_traits(prompt_text: str, port: str) -> tuple[str | None, bool | None]:
-    """포트 설명 줄이 말하는 리셋 (극성, 비동기 여부). 말하지 않으면 None. 리셋이 둘인 블록(동기 rst + 비동기 nReset)에서
+    """포트 설명 줄 및 포트별 문서 블록이 말하는 리셋 (극성, 비동기 여부). 말하지 않으면 None. 리셋이 둘인 블록(동기 rst + 비동기 nReset)에서
     문서 전체의 "asynchronous" 문구가 다른 리셋에 붙는 것을 막는다 (ChipVerilog i2c)."""
-    ln = port_line(prompt_text, port).lower()
-    if not ln:
-        return None, None
-    active = "low" if re.search(r"active[- ]low|low[- ]active", ln) else ("high" if re.search(r"active[- ]high|high[- ]active", ln) else None)
-    is_async = True if re.search(r"\basynchronous", ln) else (False if re.search(r"\bsynchronous", ln) else None)
+    ln = port_line(prompt_text, port)
+    active, is_async = _parse_reset_traits_text(ln, port) if ln else (None, None)
+    if active is not None and is_async is not None:
+        return active, is_async
+    for blk in port_doc_blocks(prompt_text, port):
+        a, s = _parse_reset_traits_text(blk, port)
+        if active is None and a is not None:
+            active = a
+        if is_async is None and s is not None:
+            is_async = s
     return active, is_async
 
 BENCH_SPEC_TASK = """\
@@ -47,7 +187,7 @@ BENCH_SPEC_TASK = """\
 
 ## 입력
 - `template.md`: SPEC 작성 템플릿. 형식 규칙(제목, 10개 섹션 이름과 순서, 요구사항 ID 줄, 시나리오 표, 열린 질문)을 그대로 따른다
-- `tables.md`: 모듈 헤더에서 결정론적으로 생성한 2~4절 표. **글자 하나 바꾸지 않고** 그대로 2, 3, 4절에 넣는다
+- `tables.md`: 모듈 헤더와 원문에서 추출한 2~4절 초기 표. 3절의 포트(이름·방향·타입)와 4절의 파라미터는 헤더 계약이므로 그대로 유지하되, 2절의 리셋 동기(`동기`/`비동기`)나 리셋 극성(`high`/`low`)이 `prompt.txt` 원문 설명과 다르면 `prompt.txt` 원문에 맞게 2절 표를 바로잡는다
 - `prompt.txt`: 벤치마크 원본 자연어 명세 전문
 - `header.sv`: 포트와 파라미터가 선언된 모듈 헤더
 - `notes.json`: 고정 파라미터, 매크로 상수, 재사용 하위 셀 정보, 제공 include에 정의되지 않은 구성 매크로(`config_macros`),
@@ -64,7 +204,7 @@ BENCH_SPEC_TASK = """\
 - 작성 후 벤치 검사(`PROMPT_COVERAGE`)가 `prompt.txt`의 식별자·비트 범위·수치 리터럴 중 SPEC에 없는 것을 알려 주면, 그 항목을
   5절 디코드 표, 7절 경계 조건, 9절 필수 구조 가운데 맞는 곳에 넣는다.
 - 제목은 반드시 `# {top} SPEC`으로 쓴다.
-- **2절, 3절, 4절은 `tables.md`의 내용을 글자 하나 바꾸지 않고 그대로 복사해 넣는다.**
+- **2절, 3절, 4절은 `tables.md`를 기준으로 넣되, 3절의 포트(이름·방향·타입)와 4절의 파라미터는 바꾸지 않는다.** 단, `prompt.txt` 원문이 리셋 동기(`동기`/`비동기`)나 리셋 극성(`high`/`low`)을 `tables.md` 2절과 다르게 명시한 경우에는 `prompt.txt` 원문에 맞게 2절 표의 리셋 동기·극성을 수정한다.
 - 1절 (`## 1. 목적과 범위`): 모듈의 목적을 한 문단으로 설명하고, 범위 밖 항목을 명시한다.
   - **동작 흐름 소절:** `prompt.txt`에 처리 순서 서술(Processing Flow, 동작 개요, 단계별 설명)이 있으면 1절 끝에 `### 동작 흐름`
     소절을 두고 그 서술을 요약하지 않고 옮긴다 (문장 수 제한 없음). 5~7절 요구사항의 근거 문맥이 되어 Author가 해석할 여지를 줄인다.
@@ -86,10 +226,14 @@ BENCH_SPEC_TASK = """\
     `spec_gate` 포트 참조로 인정된다. 원문이 표로 준 것은 표로 옮긴다.
   - **출력 미정의 금지 (벤치 검사 `UNDEFINED_OUTPUT`):** 출력 포트의 값을 `- ID 미정의: ...`로 두지 않는다. 채점은 모든 출력을 비교하므로
     미정의는 실패와 같다. 원문이 어떤 경우의 출력을 말하지 않으면 원문이 암시하는 기본값을 (필수)로 정한다:
-    여러 소스 중 하나를 고르는 읽기 다중화에서 아무것도 선택되지 않으면 0;
+    여러 소스 중 하나를 고르는 읽기 다중화에서 아무것도 선택되지 않으면 0 (접근이 일어나는 사이클 안의 주소 디코드·미매핑 주소에만
+    적용한다); 레지스터 출력(클럭 에지에서 갱신되는 읽기 데이터, 응답·상태 출력)은 원문이 "그 밖에는 0" 같은 별도 지침을 주지 않으면
+    갱신 사이클이 아닌 동안 마지막 값을 유지한다 (접근이 끝났다고 0으로 지우지 않는다);
     데이터를 고르거나 확장하는 변환 경로(바이트·반워드 선택, 부호 확장, 정렬)에서 어떤 변환도 해당하지 않으면 데이터를 그대로 통과
     (가장 넓은 접근과 같은 결과), 0이 아니다; 쓰기 조건이 아닌 사이클의 레지스터는
-    이전 값 유지; 예약 비트는 0 읽힘. 원문이 연산 코드의 일부 비트만 쓴다고 하거나 코드 표의 상위 비트가 구분에 쓰이지 않으면
+    이전 값 유지; 레지스터의 예약 비트(reserved)는 원문이 "0으로 읽힘", "쓰기 무시", "read-only" 같은 별도 지침을 주지 않으면
+    다른 필드와 똑같이 쓴 값을 저장하고 그대로 읽힌다 (0으로 지우거나 쓰기를 막지 않는다). 원문이 위치만 말하고 동작을 말하지 않은
+    예약 비트를 이렇게 정했으면 10절 `- Q-xx [LESSON]`에 "예약 비트: 쓴 값 저장"으로 남긴다. 원문이 연산 코드의 일부 비트만 쓴다고 하거나 코드 표의 상위 비트가 구분에 쓰이지 않으면
     디코드도 그 비트만 본다. 정한 값과 근거는 10절에 `- Q-xx [LESSON] ...`으로 남긴다. 예외는 리셋이 없는 도메인의 첫 값 전
     출력(`INIT_NO_RESET`)과 한 도메인만 리셋했을 때(`MULTI_RESET_USAGE`)뿐이다.
   - **프롬프트 충실성 규칙:** `prompt.txt`에 적히지 않은 리셋 해제 직후 첫 사이클 특수 동작(예: 리셋 중의 값을 첫 입력 비트로 간주할지 여부 등)을 임의로 지어내어 필수 요구사항으로 강제하지 않는다. 리셋 해제 후에는 명시적으로 인가된 입력 시퀀스에 대해서만 출력을 규정한다.
@@ -223,12 +367,12 @@ def strip_to_header(sv_text: str, top: str, lessons: list[str] | None = None) ->
 
 def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str | None, ref_hint: str = "", top: str = "",
                                  lessons: list[str] | None = None) -> tuple[str, str, bool]:
-    """프롬프트·포트 이름·R2 힌트에서 (clock_edge: 'pos'|'neg'|'both', reset_active: 'high'|'low', reset_async: bool)을 추론한다.
-    리셋 동기/비동기는 프롬프트에 적힌 것을 따르고, 모듈·포트 이름으로 한 추정은 프롬프트가 말하지 않을 때만 쓴다.
+    """자연어 프롬프트·문서 구조·포트 이름·힌트에서 (clock_edge: 'pos'|'neg'|'both', reset_active: 'high'|'low', reset_async: bool)을 추출한다.
+    리셋 동기/비동기는 프롬프트·문서에 적힌 구조를 따르고, 모듈·포트 이름으로 한 추정은 프롬프트가 말하지 않을 때만 쓴다.
     둘이 어긋나면 lessons에 남긴다."""
-    combined = (prompt_text + "\n" + ref_hint).lower()
-    text_low = prompt_text.lower()
-    hint_low = ref_hint.lower()
+    combined = _strip_md(prompt_text + "\n" + ref_hint).lower()
+    text_low = _strip_md(prompt_text).lower()
+    hint_low = _strip_md(ref_hint).lower()
     ck_l = re.escape(clk_port.lower())
     # 클럭 에지 (양쪽 에지 사용 여부 포함)
     has_pos_hint = bool(re.search(rf"posedge\s+{ck_l}", hint_low))
@@ -244,24 +388,39 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
     if rst_port is None:
         return clk_edge, "high", False
 
+    p_active, p_async = port_reset_traits(prompt_text, rst_port)
     rl = re.escape(rst_port.lower())
     # else if (rst == 0) 같은 비활성 분기 문구는 제거한 뒤 극성 판별
     cleaned_combined = re.sub(rf"else\s+if\s*\(\s*{rl}\s*==\s*(?:1'b)?0\s*\)", "", combined)
-    # 리셋 극성
+    # 리셋 극성: 무관한 데이터 포트의 "active low" 설명이 섞이지 않도록 리셋 관련 줄과 포트별 문서 블록에서만 극성을 판정한다
+    rst_lines = "\n".join(
+        ln for ln in cleaned_combined.splitlines()
+        if re.search(rf"\b(?:reset|rst|clear|clr|{rl})\b|극성|저활성|고활성", ln)
+    )
     rst_low_name = bool(re.search(r"(_n|n)$", rst_port, re.I)) and not rst_port.lower().endswith("en")
-    explicit_low = bool(
+    explicit_low = (p_active == "low") or bool(
         re.search(
-            rf"active[- ]low|low[- ]active|[!~]\s*{rl}\b|negedge\s+{rl}\b|\bif\s*\(\s*{rl}\s*==\s*(?:1'b)?0\s*\)|극성\s*\|\s*low|저활성",
-            cleaned_combined,
+            rf"active[- ]low|low[- ]active|active\s+level\s*:\s*low|\bwhen\s+(?:the\s+)?(?:reset\s*(?:\({rl}\))?(?:\s+signal)?|{rl})\s+is\s+(?:asserted\s+)?low\b"
+            rf"|(?:reset|rst)\s*(?:\({rl}\))?\s*(?:signal\s*)?is\s*low|극성\s*\|\s*low|저활성"
+            rf"|(?:negative|falling)\s+edge\s+of\s+(?:the\s+)?(?:[\w-]+\s+){{0,4}}\(?{rl}\b"
+            rf"|(?:negative|falling)\s+edge\s+of\s+(?:the\s+)?reset(?:\s+signal)?\b",
+            rst_lines,
         )
+        or re.search(rf"[!~]\s*{rl}\b|negedge\s+{rl}\b|\bif\s*\(\s*{rl}\s*==\s*(?:1'b)?0\s*\)", cleaned_combined)
     )
-    explicit_high = bool(
+    explicit_high = (p_active == "high") or bool(
         re.search(
-            rf"active[- ]high|high[- ]active|posedge\s+{rl}\b|\bif\s*\(\s*{rl}\s*(?:==\s*(?:1'b)?1)?\s*\)|(?:reset|rst)\s*\({rl}\)\s*(?:signal\s*)?is\s*high|극성\s*\|\s*high|고활성",
-            cleaned_combined,
+            rf"active[- ]high|high[- ]active|active\s+level\s*:\s*high|\bwhen\s+(?:the\s+)?(?:reset\s*(?:\({rl}\))?(?:\s+signal)?|{rl})\s+is\s+(?:asserted\s+)?high\b"
+            rf"|(?:reset|rst)\s*(?:\({rl}\))?\s*(?:signal\s*)?is\s*high|극성\s*\|\s*high|고활성"
+            rf"|(?:positive|rising)\s+edge\s+of\s+(?:the\s+)?(?:[\w-]+\s+){{0,4}}\(?{rl}\b"
+            rf"|(?:positive|rising)\s+edge\s+of\s+(?:the\s+)?reset(?:\s+signal)?\b",
+            rst_lines,
         )
+        or re.search(rf"posedge\s+{rl}\b|\bif\s*\(\s*{rl}\s*(?:==\s*(?:1'b)?1)?\s*\)", cleaned_combined)
     )
-    if explicit_high and not explicit_low:
+    if p_active is not None:
+        active = p_active
+    elif explicit_high and not explicit_low:
         active = "high"
     elif explicit_low and not explicit_high:
         active = "low"
@@ -270,20 +429,30 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
     else:
         active = "high"
 
-    # 동기 / 비동기 리셋
+    # 동기 / 비동기 리셋: 포트별 문서 블록(p_async)이 명시하면 그것을 우선하고, 없으면 자연어 문서 문맥에서 추출한다
     async_name = bool(re.match(r"^a(rst|reset)", rst_port, re.I))
     is_async_module = bool(re.search(r"(?:asyn|async|cdc)", top.lower())) if top else False
-    explicit_async = bool(
+    explicit_async = (p_async is True) or (p_async is None and bool(
         re.search(
-            rf"async(hronous|hronously)?\s*(?:reset|fifo|circuit|cdc)|비동기\s*(?:fifo|리셋)|(?:or|,)\s*(?:posedge|negedge)?\s*{rl}\b|negedge\s+{rl}\b"
-            rf"|(?:falling|rising|negative|positive)\s+edge\s+of\s+(?:the\s+)?(?:[\w-]+\s+){{0,4}}\(?{rl}\b",
+            rf"async(?:hronous|hronously)?\s+(?:[\w-]+\s+){{0,2}}(?:reset|fifo|circuit|cdc|clear|init\w*|method|signal)"
+            rf"|\b(?:reset|rst|{rl})\b[^.\n]{{0,50}}?\basync(?:hronous|hronously)\b"
+            rf"|reset[^\n]{{0,40}}\n+(?:\s*[-*+]\s*[^\n]+\n)*?\s*[-*+]?\s*type\s*:\s*asynchronous\b"
+            rf"|(?:immediately|instantly)\s+(?:resets?|clears?|initializes?|forces?)[^.\n]{{0,80}}?(?:regardless|independent)\s+of\s+(?:the\s+)?clock"
+            rf"|비동기\s*(?:fifo|리셋)|(?:or|,)\s*(?:posedge|negedge)?\s*{rl}\b|negedge\s+{rl}\b"
+            rf"|(?:falling|rising|negative|positive)\s+edge\s+of\s+(?:the\s+)?(?:[\w-]+\s+){{0,4}}\(?{rl}\b"
+            rf"|(?:on|at)\s+(?:every\s+|each\s+|the\s+)?(?:rising|positive|falling|negative)\s+edge\s+of\s+[^.\n,]{{1,50}}?\s+or\s+"
+            rf"(?:when\s+|if\s+|on\s+|at\s+)?(?:the\s+)?(?:(?:falling|rising|negative|positive)\s+edge\s+of\s+(?:the\s+)?)?(?:{rl}\b|(?:[\w-]+\s+){{0,3}}reset(?:\s+signal)?\b)",
             combined,
         )
-    )
-    # "synchronous reset" 외에 "rst (..., Synchronous to clk)", "reset synchronized to the clock" 어순도 동기 명시로 본다
-    explicit_sync = bool(re.search(
-        rf"\bsync(?:hronous|hronously)?\s+reset|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchronous(?:ly)?\s+(?:to|with)\b"
-        rf"|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchroni[sz]ed\s+(?:to|with)\b|동기\s*리셋|리셋\s*동기\s*\|\s*동기", text_low))
+    ))
+    # "synchronous reset" 외에 "rst (..., Synchronous to clk)", "reset synchronized to the clock", "Type: Synchronous", "On rising edge of clk, if rst..."도 동기 명시로 본다
+    explicit_sync = (p_async is False) or (p_async is None and bool(re.search(
+        rf"\bsync(?:hronous|hronously)?\s+(?:[\w-]+\s+){{0,2}}reset\b"
+        rf"|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchronous(?:ly)?\s+(?:to|with)\b"
+        rf"|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchroni[sz]ed\s+(?:to|with)\b"
+        rf"|reset[^\n]{{0,40}}\n+(?:\s*[-*+]\s*[^\n]+\n)*?\s*[-*+]?\s*type\s*:\s*synchronous\b"
+        rf"|(?:on|at)\s+(?:every\s+|each\s+|the\s+)?(?:rising|positive|falling|negative)\s+edge\s+of\s+(?:the\s+)?(?:clock(?:\s+signal)?\s*(?:\({ck_l}\))?|{ck_l})\s*,\s*if\s+(?:the\s+)?(?:reset(?:\s+signal)?\s*(?:\({rl}\))?|{rl})\b"
+        rf"|동기\s*리셋|리셋\s*동기\s*\|\s*동기", text_low)))
     if hint_low and not re.search(rf"(?:or|,)\s*(?:posedge|negedge)?\s*{rl}\b", hint_low) and re.search(rf"always\s*@\s*\(\s*(?:posedge|negedge)\s+{ck_l}\s*\)", hint_low):
         is_async = False
     elif explicit_sync and not explicit_async:
@@ -300,13 +469,14 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
         is_async = False
         if not explicit_sync and lessons is not None:
             lessons.append(f"리셋 판정 기본값: prompt.txt에 리셋 {rst_port}의 동기/비동기가 없어 동기로 정했다. 사용자가 확인해야 한다.")
-    p_active, p_async = port_reset_traits(prompt_text, rst_port)
-    return clk_edge, p_active or active, is_async if p_async is None else p_async
+    return clk_edge, active, is_async
 
 
 def _inject_dummy_seq_if_empty(sv_text: str, top: str, prompt_text: str, incdirs: list[Path], defines: dict[str, str],
-                               params: dict[str, str], tmp_dir: Path, ref_hint: str = "", lessons: list[str] | None = None) -> Path:
-    """빈 모듈 헤더(`module top(...); endmodule`)에 클럭/리셋 더미 순차 블록과 파라미터 참조를 넣어 r1이 도메인·포트·파라미터를 추출하게 한다."""
+                               params: dict[str, str], tmp_dir: Path, ref_hint: str = "", lessons: list[str] | None = None,
+                               code_texts: list[str] = (), header_raw: str = "") -> Path:
+    """완성된 RTL 본문이 있으면 그대로 반환하여 r1이 코드 기반으로 추출하게 하고,
+    완성된 RTL 코드가 없는 빈 모듈 헤더(`module top(...); endmodule`)일 때만 자연어 프롬프트·문서에서 추출한 클럭/리셋 구조를 반영한다."""
     raw_file = tmp_dir / f"{top}_raw.sv"
     if "endmodule" not in sv_text:
         sv_text = sv_text.rstrip() + "\nendmodule\n"
@@ -314,8 +484,8 @@ def _inject_dummy_seq_if_empty(sv_text: str, top: str, prompt_text: str, incdirs
     design = Design(Inputs([raw_file], top, params, incdirs, defines))
     body = design.top.body
     SK = pyslang.SymbolKind
-    has_seq = any(m.kind == SK.ProceduralBlock for m in body)
-    if has_seq:
+    has_rtl_body = any(m.kind in (SK.ProceduralBlock, SK.ContinuousAssign, SK.Instance) for m in body)
+    if has_rtl_body:
         return raw_file
 
     in_ports = [p.name for p in body.portList if p.kind == SK.Port and p.direction == pyslang.ArgumentDirection.In]
@@ -324,11 +494,19 @@ def _inject_dummy_seq_if_empty(sv_text: str, top: str, prompt_text: str, incdirs
 
     width = {p.name: getattr(getattr(p, "type", None), "bitWidth", 1) for p in body.portList if p.kind == SK.Port}
     # 여러 비트 포트는 클럭이 아니다 (ChipVerilog i2c clk_cnt[15:0]은 분주 값)
-    clks = [p for p in in_ports if CLK_RE.search(p) and width.get(p, 1) == 1]
-    rsts = [p for p in in_ports if RST_RE.search(p) and p not in clks and width.get(p, 1) == 1]
+    # 쓰임새 근거(헤더 주석, 감응 목록, 포트 설명)가 먼저고 이름 패턴은 근거가 없는 포트에만 쓴다
+    one_bit = [p for p in in_ports if width.get(p, 1) == 1]
+    ev = clock_reset_evidence(one_bit, prompt_text, list(code_texts), header_raw)
+    clks = [p for p in one_bit if p in ev["clocks"] or (CLK_RE.search(p) and p not in ev["resets"])]
+    rsts = [p for p in one_bit if p not in clks and (p in ev["resets"] or RST_RE.search(p))]
+    if lessons is not None:
+        named = {p for p in one_bit if CLK_RE.search(p)} | {p for p in one_bit if RST_RE.search(p)}
+        for p in [*clks, *rsts]:
+            if p in ev["why"] and p not in named:
+                lessons.append(f"클럭·리셋 판정: {p}는 이름으로는 알 수 없지만 {ev['why'][p]}에 따라 {'클럭' if p in clks else '리셋'}으로 보았다.")
     if len(clks) == 1 and len(rsts) > 1:
         # 클럭 하나에 리셋이 여럿 (동기 rst + 비동기 nReset): 포트 설명이 비동기라 한 리셋을 도메인 리셋으로, 나머지는 동기 입력으로
-        asyncs = [r for r in rsts if port_reset_traits(prompt_text, r)[1]]
+        asyncs = [r for r in rsts if (ev["resets"].get(r) or {}).get("async") or port_reset_traits(prompt_text, r)[1]]
         if asyncs:
             keep = asyncs[0]
             if lessons is not None:
@@ -376,7 +554,20 @@ def _inject_dummy_seq_if_empty(sv_text: str, top: str, prompt_text: str, incdirs
     )
 
     for idx, (ck, rst) in enumerate(pairs):
-        edge, active, is_async = infer_reset_and_clock_traits(prompt_text, ck, rst, ref_hint=ref_hint, top=top, lessons=lessons)
+        trait_lessons: list[str] = []
+        edge, active, is_async = infer_reset_and_clock_traits(prompt_text, ck, rst, ref_hint=ref_hint, top=top, lessons=trait_lessons)
+        # 코드·헤더 주석 근거가 있으면 그것이 문장 추정보다 우선
+        if ev["clocks"].get(ck) == "neg" and ev["why"].get(ck, "").startswith(("감응", "헤더")):
+            edge = "neg"
+        if rst and (rv := ev["resets"].get(rst)) and ev["why"].get(rst, "").startswith(("감응", "헤더", "클럭 블록")):
+            active = rv["active"] or active
+            is_async = is_async if rv["async"] is None else rv["async"]
+            # 문장 추정이 남긴 리셋 LESSON("동기로 정했다" 등)은 최종 판정과 어긋나므로 근거 기반 문구로 바꾼다
+            trait_lessons = [x for x in trait_lessons if rst not in x]
+            trait_lessons.append(f"리셋 판정: {rst}는 {ev['why'][rst]}에 따라 {'비동기' if is_async else '동기'}, "
+                                 f"active-{active}로 보았다. 원문이 동기/비동기를 말하지 않으면 사용자가 확인해야 한다.")
+        if lessons is not None:
+            lessons.extend(trait_lessons)
         edges = ["posedge", "negedge"] if edge == "both" else (["negedge"] if edge == "neg" else ["posedge"])
         prefix = re.sub(r"^(clk|clock)_?|_?(clk|clock)$", "", ck, flags=re.I).strip("_").lower()
         if len(pairs) > 1 and prefix:
@@ -609,8 +800,8 @@ def undefined_output_errors(spec_text: str, top_l1: dict) -> list[str]:
         hit = [o for o in outs if re.search(rf"(?<![A-Za-z0-9_]){re.escape(o)}(?![A-Za-z0-9_])", r.text)]
         if hit:
             errs.append(f"[벤치 검사] UNDEFINED_OUTPUT {r.id}: 출력 {', '.join(hit)}의 값을 미정의로 둠. 채점은 모든 출력을 비교하므로 "
-                        "원문이 암시하는 기본값(읽기 다중화의 선택 없음·미매핑은 0, 데이터 변환 경로의 해당 없음은 그대로 통과, 쓰기 조건 아니면 "
-                        "이전 값 유지, 예약 비트 0)을 (필수)로 정하고 근거를 10절 [LESSON]에 남긴다")
+                        "원문이 암시하는 기본값(접근 사이클의 읽기 다중화 선택 없음·미매핑은 0, 레지스터 출력은 갱신 사이클 밖에서 마지막 값 유지, 데이터 변환 경로의 해당 없음은 그대로 통과, 쓰기 조건 아니면 "
+                        "이전 값 유지, 별도 지침 없는 예약 비트는 쓴 값 저장)을 (필수)로 정하고 근거를 10절 [LESSON]에 남긴다")
     return errs
 
 
@@ -625,8 +816,8 @@ def coverage_errors(prompt_text: str, spec_text: str, top: str, minimum: float =
 
 
 def bench_spec_check(top_l1: dict, prompt_text: str, top: str):
-    """SpecWriter 종료 검사: 기존 spec_gate + 출력 미정의 금지(항상) + 원문 커버리지(첫 작성 뒤 한 번만 다시 쓰게 한다)."""
-    base = spec_writer.check(top_l1)
+    """SpecWriter 종료 검사: 기존 spec_gate(헤더 인터페이스 대조 + 2절 도메인 자연어 확정 허용) + 출력 미정의 금지(항상) + 원문 커버리지(첫 작성 뒤 한 번만 다시 쓰게 한다)."""
+    base = spec_writer.check(top_l1, allow_domain_refine=True)
     calls = [0]
 
     def _check(work: Path) -> list[str]:
@@ -662,6 +853,8 @@ HEADER_TASK = """\
 - 폭이 파라미터로 주어지면 `[WIDTH-1:0]`처럼 파라미터 식으로 쓴다. 명세가 폭을 말하지 않는 1비트 신호는 폭 없이 쓴다.
 - `input [7:0] a`, `output reg [7:0] b`처럼 Verilog-2001 문법으로 쓴다 (채점기는 Icarus Verilog다). `logic`은 쓰지 않는다.
 - 두 가지로 읽히는 부분은 `endmodule` 뒤 주석 `// Q: ...`으로 남긴다.
+- 클럭과 리셋 포트는 `endmodule` 뒤에 한 줄씩 표시한다: `// @clock <포트> posedge|negedge`,
+  `// @reset <포트> active-low|active-high async|sync`. 명세가 말한 대로 쓰고, 말하지 않은 것은 표준 관례를 따르되 `// Q:`에 남긴다.
 
 ## 규칙
 - `{out}` 외의 파일은 만들거나 고치지 않는다.
@@ -753,7 +946,11 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
     (work_dir / "header.sv").write_text(clean_hdr, encoding="utf-8")
 
     # 클럭 에지·리셋 극성/동기는 프롬프트와 헤더로만 정한다. 정답 RTL(reference_rtl)에서 힌트를 뽑지 않는다 (엔진 간 공정 비교)
-    aug_file = _inject_dummy_seq_if_empty(clean_hdr, item.top, item.prompt_text, incdirs, item.defines, item.params, work_dir, lessons=lessons)
+    # 감응 목록을 읽을 코드: 제공 셀과 CVDP 컨텍스트 RTL (정답 RTL은 넣지 않는다)
+    code_files = [*cells, *[Path(c) for c in item.eval.extra.get("context_rtl", [])]]
+    code_texts = [f.read_text(encoding="utf-8", errors="replace") for f in code_files if Path(f).is_file()]
+    aug_file = _inject_dummy_seq_if_empty(clean_hdr, item.top, item.prompt_text, incdirs, item.defines, item.params, work_dir, lessons=lessons,
+                                          code_texts=code_texts, header_raw=raw_text)
 
     inp = Inputs([*cells, aug_file], item.top, dict(item.params), incdirs, dict(item.defines))
     r1_res = r1_mod.run(inp, work_dir)
@@ -906,5 +1103,11 @@ def generate_spec(item: BenchItem, work_dir: Path, roles: roles_mod.Roles, isola
     spec_out = work_dir / "spec.md"
     # 원문 전문을 부록으로 붙여 Architect·Author·Verifier·Repair가 SPEC에서 빠진 세부를 원문에서 찾을 수 있게 한다
     spec_out.write_text(with_prompt_appendix(Path(res.outputs[OUT]).read_text(encoding="utf-8"), item.prompt_text), encoding="utf-8")
-    gate_errs = spec_writer.gate(spec_out, top_l1) + undefined_output_errors(spec_out.read_text(encoding="utf-8"), top_l1)
+    gate_errs = spec_writer.gate(spec_out, top_l1, allow_domain_refine=True) + undefined_output_errors(spec_out.read_text(encoding="utf-8"), top_l1)
+    if not gate_errs:
+        from pipeline.spec.l1 import block_top_l1
+        from pipeline.spec.parse import load as load_spec
+        final_l1, _ = block_top_l1(load_spec(spec_out))
+        (work_dir / "l1_extract" / "top.l1.json").write_text(json.dumps(final_l1, ensure_ascii=False, indent=2), encoding="utf-8")
+        (work_dir / "l1_extract" / "tables.md").write_text(spec_tables.tables_md(final_l1), encoding="utf-8")
     return (spec_out if not gate_errs else None), gate_errs, res

@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 
 from pipeline.agents.task import ROOT, Task
-from pipeline.importer.spec_tables import roundtrip_diff
+from pipeline.importer.spec_tables import interface_diff, roundtrip_diff
 from pipeline.spec.check import run as spec_check
 from pipeline.spec.l1 import SpecTableError, block_top_l1
 from pipeline.spec.parse import load
@@ -113,8 +113,8 @@ def make_task(name: str, top: str, tables: str, sources: dict[str, Path], irs: d
     return Task("spec_writer", name, text, inputs=inputs, outputs=[OUT], write_scope=["out/", ".refsim/"])
 
 
-def gate(spec_path: Path, top_l1: dict) -> list[str]:
-    """SPEC 검사 게이트 + 2~4절 왕복 + 제목."""
+def gate(spec_path: Path, top_l1: dict, allow_domain_refine: bool = False) -> list[str]:
+    """SPEC 검사 게이트 + 2~4절 왕복(또는 헤더 인터페이스 대조) + 제목."""
     try:
         spec = load(spec_path)
     except (OSError, UnicodeDecodeError) as e:
@@ -128,14 +128,15 @@ def gate(spec_path: Path, top_l1: dict) -> list[str]:
         l1, _ = block_top_l1(spec)
     except SpecTableError as e:
         return errs + [f"[2~4절] {e}"]
-    errs += [f"[2~4절] {d}" for d in roundtrip_diff(top_l1, l1)]
+    diff_fn = interface_diff if allow_domain_refine else roundtrip_diff
+    errs += [f"[2~4절] {d}" for d in diff_fn(top_l1, l1)]
     return errs
 
 
-def check(top_l1: dict, prev_text: str | None = None):
+def check(top_l1: dict, prev_text: str | None = None, allow_domain_refine: bool = False):
     def _check(work: Path) -> list[str]:
         p = work / OUT
-        errs = gate(p, top_l1)
+        errs = gate(p, top_l1, allow_domain_refine=allow_domain_refine)
         if prev_text is not None and p.exists() and p.read_text(encoding="utf-8") == prev_text:
             errs.append("SPEC이 바뀌지 않음 (R6 차이를 정하는 요구사항을 더해야 함)")
         return errs

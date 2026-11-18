@@ -311,14 +311,15 @@ def cmd_refsim(a) -> dict:
 
 
 def cmd_spec_gate(a) -> dict:
-    """SPEC 검사 게이트와, SPEC 2~4절에서 만든 L1이 tables.md의 L1과 같은지."""
+    """SPEC 검사 게이트와, SPEC 2~4절에서 만든 L1이 tables.md의 L1(또는 헤더 인터페이스)과 같은지."""
     from pipeline.agents.spec_writer import gate
     from pipeline.spec.l1 import block_top_l1
     from pipeline.spec.parse import parse
 
     tables = Path(a.tables).read_text(encoding="utf-8")
     want, _ = block_top_l1(parse(f"# {a.top} SPEC\n\n" + tables))
-    errs = gate(Path(a.spec), want)
+    allow_domain_refine = (Path.cwd() / "prompt.txt").exists() and not (Path.cwd() / "source").exists()
+    errs = gate(Path(a.spec), want, allow_domain_refine=allow_domain_refine)
     return {"ok": not errs, "errors": errs[:30]}
 
 
