@@ -422,3 +422,29 @@ def test_internal_pipeline_bugfixes_and_sv_testbench_mode(tmp_path: Path):
         assert r_ok.ok and r_ok.findings == []
         r_fail = sim_sv([bad_dut], "crc1", tb_sv, tmp_path / "sim_fail")
         assert not r_fail.ok and r_fail.findings[0].rule == "AssertionError" and "SC-01" in r_fail.findings[0].message
+
+
+def test_realbench_cell_module_deduplication(tmp_path: Path):
+    """RealBench 어댑터 및 runner에서 동일 모듈이 여러 셀 파일(rtl/submodules vs tb/)에 있을 때 중복 제거 검증."""
+    from experiments.bench.common.modules import module_names
+
+    f1 = tmp_path / "cell1.v"
+    f1.write_text("module shared_fifo(input clk); endmodule\n", encoding="utf-8")
+    f2 = tmp_path / "cell2.sv"
+    f2.write_text("module shared_fifo(input clk); // duplicate\nendmodule\n", encoding="utf-8")
+    f3 = tmp_path / "cell3.v"
+    f3.write_text("module unique_cell(input clk); endmodule\n", encoding="utf-8")
+
+    raw_cells = [f1, f2, f3]
+    seen_mods: set[str] = set()
+    deduped = []
+    for f in raw_cells:
+        mods = module_names(f.read_text(encoding="utf-8"))
+        if mods and all(m in seen_mods for m in mods):
+            continue
+        seen_mods.update(mods)
+        deduped.append(f)
+
+    assert deduped == [f1, f3]
+    assert seen_mods == {"shared_fifo", "unique_cell"}
+

@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from experiments.bench.common.modules import merge_candidate, modules_in_files
+from experiments.bench.common.modules import merge_candidate, modules_in_files, module_names
 from experiments.bench.common.schema import BenchItem, EvalSpec
 
 ROOT = next((d for d in Path(__file__).resolve().parents if (d / "build" / "datasets").exists()), Path(__file__).resolve().parents[3])
@@ -81,8 +81,16 @@ def to_item(rec: dict, raw_root: Path, src_root: Path) -> BenchItem:
     stimulus = [rel for rel in tb if rel.endswith("_stimulus_gen.sv")]
     refs = [rel for rel in tb if rel.endswith("_ref.sv")] + (["ref/gold.v"] if "ref/gold.v" in h["files"] else [])
     # 후보가 쓸 수 있는 셀: 시스템 레벨의 하위 모듈과 TB 쪽 라이브러리(sirv_gnrl_* 등). defines·config는 include 파일이라 뺀다
-    cells = [rel for rel in h["files"] if rel.startswith("rtl/submodules/")]
-    cells += [rel for rel in tb if _is_tb_side(rel) and not re.search(r"defines|config", Path(rel).name)]
+    raw_cells = [rel for rel in h["files"] if rel.startswith("rtl/submodules/")]
+    raw_cells += [rel for rel in tb if _is_tb_side(rel) and not re.search(r"defines|config", Path(rel).name)]
+    seen_mods: set[str] = set()
+    cells = []
+    for rel in raw_cells:
+        mods = module_names(h["files"][rel])
+        if mods and all(m in seen_mods for m in mods):
+            continue
+        seen_mods.update(mods)
+        cells.append(rel)
     if not testbench:
         raise FileNotFoundError(f"RealBench TB가 없음: {rec['id']}")
     tb_top = re.search(r"^\s*module\s+(\w+)", h["files"][testbench[0]], re.M)

@@ -12,6 +12,7 @@ from typing import Any
 
 from experiments.bench.common import ext_fix
 from experiments.bench.common.lec import yosys_lec
+from experiments.bench.common.modules import module_names
 from experiments.bench.common.schema import BenchItem, BenchResult
 from pipeline.importer.sources import SourceError
 from experiments.bench.common.to_spec import _read_header_text, ensure_header, extract_header_l1, generate_spec, strip_to_header
@@ -550,7 +551,20 @@ def run_bench_item(
             return res
 
     extra_cells = [Path(c).resolve() for c in item.cells if Path(c).exists()]
-    cells = [*STUB_CELLS, *extra_cells]
+    cell_mods_seen: set[str] = set()
+    deduped_cells: list[Path] = []
+    for cp in [*STUB_CELLS, *extra_cells]:
+        if not cp.exists():
+            continue
+        try:
+            mods = module_names(cp.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            mods = []
+        if mods and all(m in cell_mods_seen for m in mods):
+            continue
+        cell_mods_seen.update(mods)
+        deduped_cells.append(cp)
+    cells = deduped_cells
     opts = dict(isolate=isolate, auto_approve=auto_approve, max_auto_approves=max_auto_approves,
                 max_arch_revisions=max_arch_revisions, skip_verifier=skip_verifier)
     first = run_and_score(item, out_dir / "run", out_dir / "eval", spec_path, roles, cells, **opts)
