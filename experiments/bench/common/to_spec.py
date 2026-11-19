@@ -460,15 +460,11 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
         if (is_async_module or async_name) and lessons is not None:
             lessons.append(f"리셋 판정 충돌: 리셋 {rst_port}는 이름({top or rst_port})으로는 비동기로 보이지만 prompt.txt가 동기 리셋을 명시해 "
                            "프롬프트대로 동기로 썼다. 의도가 맞는지 사용자가 확인해야 한다.")
-    elif explicit_async or async_name or is_async_module:
+    else:
+        # 원문이 동기를 명시하지 않으면 비동기 리셋을 기본값으로 쓴다
         is_async = True
         if not explicit_async and lessons is not None:
-            lessons.append(f"리셋 판정 추정: prompt.txt에 리셋 {rst_port}의 동기/비동기가 없어 이름({top if is_async_module else rst_port})으로 "
-                           "비동기로 추정했다. 사용자가 확인해야 한다.")
-    else:
-        is_async = False
-        if not explicit_sync and lessons is not None:
-            lessons.append(f"리셋 판정 기본값: prompt.txt에 리셋 {rst_port}의 동기/비동기가 없어 동기로 정했다. 사용자가 확인해야 한다.")
+            lessons.append(f"리셋 판정 기본값: prompt.txt에 리셋 {rst_port}의 동기/비동기가 없어 비동기로 정했다. 사용자가 확인해야 한다.")
     return clk_edge, active, is_async
 
 
@@ -855,6 +851,7 @@ HEADER_TASK = """\
 - 두 가지로 읽히는 부분은 `endmodule` 뒤 주석 `// Q: ...`으로 남긴다.
 - 클럭과 리셋 포트는 `endmodule` 뒤에 한 줄씩 표시한다: `// @clock <포트> posedge|negedge`,
   `// @reset <포트> active-low|active-high async|sync`. 명세가 말한 대로 쓰고, 말하지 않은 것은 표준 관례를 따르되 `// Q:`에 남긴다.
+  명세가 리셋의 동기/비동기를 말하지 않으면 `async`로 쓴다.
 
 ## 규칙
 - `{out}` 외의 파일은 만들거나 고치지 않는다.

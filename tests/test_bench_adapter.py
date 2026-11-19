@@ -887,17 +887,17 @@ def test_reset_traits_follow_prompt_and_record_lesson():
     assert len(lessons) == 1 and "충돌" in lessons[0]
     lessons.clear()
     assert traits("dual clock FIFO", "wclk", "wrstn", top="asyn_fifo", lessons=lessons)[2] is True
-    assert len(lessons) == 1 and "추정" in lessons[0]
+    assert len(lessons) == 1 and "기본값" in lessons[0]
     assert traits("always @(posedge clk or negedge rst_n)", "clk", "rst_n")[2] is True
 
 
 def test_reset_falling_edge_phrase_is_async_and_default_lesson():
-    """프롬프트의 "falling edge of reset signal B (brstn)"는 비동기 리셋이다 (RTLLM synchronizer). 언급이 없으면 동기 + LESSON."""
+    """프롬프트의 "falling edge of reset signal B (brstn)"는 비동기 리셋이다 (RTLLM synchronizer). 언급이 없으면 비동기 + LESSON."""
     from experiments.bench.common.to_spec import infer_reset_and_clock_traits as traits
     assert traits("On the positive edge of clock B (clk_b) or the falling edge of reset signal B (brstn), update.",
                   "clk_b", "brstn")[2] is True
     lessons: list[str] = []
-    assert traits("Counts up on every clock.", "clk", "rst_n", lessons=lessons)[2] is False
+    assert traits("Counts up on every clock.", "clk", "rst_n", lessons=lessons)[2] is True
     assert len(lessons) == 1 and "기본값" in lessons[0]
 
 
