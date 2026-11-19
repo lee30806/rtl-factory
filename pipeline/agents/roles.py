@@ -21,6 +21,7 @@ class Roles:
     counts: dict[str, int]
     limits: dict[str, int]
     author_langs: tuple[str, ...] = ("sv",)
+    tb_lang: str = "cocotb"              # Verifier 테스트벤치 언어: cocotb (기본) 또는 sv
 
     def lang_of(self, c: int) -> str:
         """Author 후보 c의 조각 언어."""
@@ -40,5 +41,6 @@ def load(path: str | Path = ROOT / "config" / "roles.json") -> Roles:
     ap = Path(raw["agents"])
     agents = {a.name: a for a in load_agents(ap if ap.is_absolute() else ROOT / ap)}
     roles = {r: agents[c["agent"]] for r, c in raw["roles"].items()}
+    tb_lang = raw.get("tb_lang") or raw["roles"].get("verifier", {}).get("lang") or "cocotb"
     return Roles(roles, {r: c.get("count", 1) for r, c in raw["roles"].items()}, raw.get("limits", {}),
-                 tuple(raw["roles"].get("author", {}).get("langs") or ("sv",)))
+                 tuple(raw["roles"].get("author", {}).get("langs") or ("sv",)), str(tb_lang))

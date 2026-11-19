@@ -28,7 +28,11 @@ SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 �
 - `spec.md`: SPEC. 근거로 든 문장이 10절 [LESSON]의 추정값이면 판정에 "추정값"임을 적는다
 - `mismatch.json`: 불일치 리포트. `first_failure`의 expected는 참조 모델의 기댓값, got은 RTL의 실제값이다.
   `fsm_trace`, `fanin.values`는 그 시점 전후의 내부 값, `spec.clauses`는 관련 요구사항이다
-- `test.py`: 참조 모델과 테스트 시나리오 (기댓값이 어떻게 만들어졌는지)
+- `test.py` (또는 `test.sv`): 참조 모델과 테스트 시나리오 (기댓값이 어떻게 만들어졌는지)
+- `mismatch.json`에 `other_verifiers_passed`가 있으면: **같은 RTL 후보가 다른 독립 Verifier(`other_verifiers_passed`)의 테스트벤치는 모두 통과**했다는 뜻이다.
+  이 경우 RTL은 정상인데 실패한 테스트 코드에 구현 결함(예: 입력 구동 헬퍼 안의 `FallingEdge`/`RisingEdge`와 호출부의 클럭 대기가 겹쳐 클럭 에지가 2번 이상 지난 뒤
+  1사이클 기댓값과 비교, 리셋 해제 타이밍 오류, `h.drain()` 동안 입력이 0으로 바뀌어 마지막 사이클 속성이 깨짐, 외부 서브모듈이나 미정의 초기값을 임의로 0으로 가정 등)이 있는지
+  테스트의 클럭 에지 경과 횟수와 신호 구동 순서를 반드시 먼저 추적한다. 테스트가 에지를 더 보냈거나 자극/기댓값을 잘못 구성해 생긴 불일치면 `test_wrong`이다
 - `mismatch.json`에 `repair_claim`이 있으면: Repair가 이 기댓값은 모듈 인터페이스(L1)를 바꾸지 않고는 맞출 수 없다고 주장했다
   (`reason`). SPEC이 정말 그 기댓값을 요구하는지 판정한다. SPEC 문장보다 테스트가 더 엄격하게 읽었으면
   (예: "리셋 동안"을 리셋이 걸린 바로 그 사이클로 읽음) test_wrong, SPEC이 분명히 요구하면 rtl_wrong이다
@@ -54,11 +58,14 @@ SPEC 구절을 근거로 판정하고 `{out}`에 아래 JSON을 쓴다.
 
 def make_task(name: str, spec: str | Path, mismatch: dict, test_file: Path) -> Task:
     inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "mismatch.json": json.dumps(mismatch, ensure_ascii=False, indent=1), "test.py": test_file}
+    if Path(test_file).suffix == ".sv":
+        inputs["test.sv"] = test_file
     return Task("arbiter", name, TASK.format(out=OUT), inputs=inputs, tools=False, outputs=[OUT])
 
 
 def check(spec: str | Path):
-    known = {r.id for r in load(spec).requirements}
+    sp = load(spec)
+    known = {r.id for r in sp.requirements} | {s["id"] for s in sp.scenarios}
 
     def _check(work: Path) -> list[str]:
         try:

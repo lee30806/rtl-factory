@@ -276,6 +276,51 @@ def sim(files: list[Path], top: str, test_module: str, test_dir: Path, build_dir
     return StageResult("E2", not findings, findings, "\n".join(logs)[-20000:], cov)
 
 
+def sim_sv(files: list[Path], top: str, tb_file: Path, build_dir: Path,
+           build_args: list[str] | None = None, timeout_s: float = 60.0) -> StageResult:
+    """E2 (SystemVerilog 자체 판정 테스트벤치 경로). iverilog -g2012 + vvp로 컴파일·실행한다."""
+    import shutil
+
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    tb_file = Path(tb_file).resolve()
+    test_name = tb_file.stem
+    if not shutil.which("iverilog") or not shutil.which("vvp"):
+        return StageResult("E2", False, [Finding("sv_tb", "TOOL", tb_file.name, None, "iverilog/vvp가 설치되어 있지 않음", test=test_name)])
+    tb_text = tb_file.read_text(encoding="utf-8", errors="replace")
+    tb_mods = re.findall(r"^\s*module\s+([A-Za-z_]\w*)", tb_text, re.M)
+    tb_top = f"test_{top}" if f"test_{top}" in tb_mods else (tb_mods[0] if tb_mods else f"test_{top}")
+    inc_flags = [a for a in (build_args or []) if a.startswith(("-I", "-D"))]
+    vvp_bin = build_dir / "sim.vvp"
+    cmd = ["iverilog", "-g2012", *inc_flags, "-s", tb_top, "-o", str(vvp_bin), *[str(Path(f).resolve()) for f in files], str(tb_file)]
+    comp = subprocess.run(cmd, cwd=build_dir, capture_output=True, text=True, timeout=60)
+    comp_log = comp.stdout + comp.stderr
+    (build_dir / "build.log").write_text(comp_log, encoding="utf-8")
+    if comp.returncode != 0:
+        return StageResult("E2", False, [Finding("sv_tb", "TB_COMPILE", tb_file.name, None, comp_log.strip()[-1500:], test=test_name)],
+                           comp_log[-20000:])
+    sva = any(SVA_MARK in Path(f).read_text(errors="replace") for f in files)
+    try:
+        p = subprocess.run(["vvp", str(vvp_bin)], cwd=build_dir, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        return StageResult("E2", False, [Finding("sv_tb", "SIM_TIMEOUT", tb_file.name, None,
+                                                 f"{timeout_s:.0f}초 안에 끝나지 않아 중단 ({test_name})", test=test_name)], "SIM_TIMEOUT")
+    full_log = p.stdout + p.stderr
+    (build_dir / "test.default.log").write_text(full_log, encoding="utf-8")
+    sva_findings = parse_sva(full_log) if sva else []
+    if p.returncode == 0 and "TEST PASSED" in full_log and "TEST FAILED" not in full_log and not sva_findings:
+        return StageResult("E2", True, [], full_log[-20000:])
+    fail_lines = [ln.strip() for ln in full_log.splitlines() if "TEST FAILED" in ln]
+    if not fail_lines:
+        tail = [ln.strip() for ln in full_log.splitlines() if ln.strip()][-3:]
+        fail_msg = "; ".join(tail) if tail else f"시뮬레이션 실패 (returncode={p.returncode})"
+    else:
+        fail_msg = "; ".join(fail_lines[:3])
+    rule = "SIM_TIMEOUT" if "SIM_TIMEOUT" in fail_msg else "AssertionError"
+    findings = [Finding("sv_tb", rule, tb_file.name, None, fail_msg[:500], test=test_name), *sva_findings]
+    return StageResult("E2", False, findings, full_log[-20000:])
+
+
 def _compare_outputs(tb_out: Path, tags: list[str], outputs: list[str], qualifiers: dict[str, str] | None = None) -> str | None:
     """시드별 트레이스에서 DUT 출력값을 사이클 단위로 비교해 처음 달라진 곳을 돌려준다.
     qualifiers의 data 출력은 양쪽 모두 valid가 0이면 비교하지 않는다 (리셋 없는 data 레지스터의 초기값)."""

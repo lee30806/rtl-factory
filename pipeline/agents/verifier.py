@@ -136,8 +136,8 @@ SPEC_UPDATE = """\
 """
 
 
-def out_rel(module: str) -> str:
-    return f"out/test_{module}.py"
+def out_rel(module: str, tb_lang: str = "cocotb") -> str:
+    return f"out/test_{module}.sv" if tb_lang == "sv" else f"out/test_{module}.py"
 
 
 INOUT_NOTE = """
@@ -147,44 +147,142 @@ INOUT_NOTE = """
 블록과 동시에 구동하면 블록의 값이 보인다. 참조 모델의 입력과 출력도 이 이름으로 쓴다.
 """
 
+CELLS_NOTE = """
+## 제공 외부 서브모듈 (`cells/`)
+`cells/` 디렉터리에 블록 내부에서 인스턴스화되는 외부 서브모듈(메모리, 연산기 등)의 RTL 파일이 들어 있다.
+외부 서브모듈의 초기값이나 읽기/쓰기 동작이 출력에 영향을 주면 해당 파일을 읽고 참조 모델이나 기댓값에 반영한다.
+"""
 
-def _inout(l1: dict) -> str:
+SV_TASK = """\
+# 과제: {module} 모듈의 SystemVerilog 자체 판정 테스트벤치 작성
+
+너는 RTL 생성 파이프라인의 Verifier 에이전트다. RTL은 볼 수 없다. SPEC과 인터페이스(L1)만 보고, RTL이 SPEC을
+지키는지 판정할 SystemVerilog-2012 테스트벤치를 `{out}`에 쓴다.
+
+## 입력
+- `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다
+- `spec.md`: SPEC. 5~7번 섹션의 요구사항, 8번 섹션의 예시 시나리오. 10절 [LESSON]의 추정값도 (필수)로 확정된 계약이라 검사 대상이다.
+  `미정의:` 줄의 입력에는 기대값을 두지 않는다
+- `l1.json`: 동결된 L1 (포트, 번들, 도메인, 파라미터)
+
+## 규칙
+- 첫 줄에 `` `timescale 1ns/1ps ``를 쓰고, 최상위 테스트벤치 모듈 이름은 `test_{module}`로 하며 `{module}`을 인스턴스화한다.
+- 클럭이 있는 순차 모듈은 활성 클럭 에지와 겹치지 않는 비활성 에지(예: `posedge` 도메인이면 `@(negedge clk)`)에서 입력과 리셋을 구동하고,
+  출력 검사는 활성 에지 직전이나 `@(posedge clk); #1;` 뒤에 수행해 시뮬레이터 레이스 컨디션이 없게 한다.
+- 5~7절의 모든 (필수) 요구사항과 8절의 예시 시나리오(directed 테스트) 및 무작위 자극 테스트를 포함한다.
+- 불일치가 하나라도 발생하면 `$display("TEST FAILED: [test=%s] [req=%s] [cycle=%0d] expected=%0h got=%0h", ...);`를 출력하고 즉시 `$finish;`로 끝낸다.
+- 모든 검사를 통과하면 `$display("TEST PASSED");`를 출력하고 `$finish;`로 끝낸다.
+- 설계가 멈춰도 시뮬레이션이 끝나도록 별도 `initial` 블록에 충분한 시간 뒤 `$display("TEST FAILED: SIM_TIMEOUT"); $finish;` 워치독을 둔다.
+- `$fatal`, DPI, 외부 파일 입출력, 마크다운 코드 울타리는 쓰지 않는다.
+- `{out}` 외의 파일은 만들거나 고치지 않는다.
+"""
+
+SV_REVISE = """\
+# 과제: {module} 모듈 SystemVerilog 테스트벤치의 기댓값 수정 (사람 승인됨)
+
+너는 RTL 생성 파이프라인의 Verifier 에이전트다. 네가 쓴 테스트벤치 `{out}`가 RTL과 다른 기댓값을 냈고, Arbiter가 SPEC을 근거로
+테스트 쪽이 틀렸다고 판정했다. 사람이 그 수정안을 승인했다. 수정안대로 `{out}`를 고친다. RTL은 볼 수 없다.
+
+## 입력
+- `{out}`: 지금 테스트벤치 (이 파일을 고친다)
+- `approved.json`: 승인된 수정안 목록 (`reqs`, `reason`, `proposal`, `first_failure`)
+- `spec.md`, `spec_guide.md`, `l1.json`: 처음 테스트를 쓸 때와 같다
+
+## 할 일
+1. `approved.json`의 수정안이 가리키는 기댓값, 클럭/리셋 구동 타이밍, 시나리오를 SPEC 구절에 맞게 고친다.
+2. 수정안과 관계없는 검사는 그대로 유지하고, 통과 시 `$display("TEST PASSED");`, 실패 시 `$display("TEST FAILED: ...");`와 `$finish;` 규칙을 지킨다.
+3. `{out}` 외의 파일은 만들거나 고치지 않는다.
+"""
+
+SV_SPEC_UPDATE = """\
+# 과제: {module} 모듈 SystemVerilog 테스트벤치를 개정된 SPEC에 맞추기
+
+너는 RTL 생성 파이프라인의 Verifier 에이전트다. SPEC이 개정되었다(사람 승인). 네 테스트벤치 `{out}`를 새 SPEC에 맞춘다. RTL은 볼 수 없다.
+
+## 입력
+- `{out}`: 지금 테스트벤치 (이전 SPEC 기준. 이 파일을 고친다)
+- `spec.md`: 새 SPEC, `spec_old.md`: 이전 SPEC
+- `spec_diff.json`: 바뀐 요구사항과 시나리오 목록
+- `l1.json`: 동결된 L1
+
+## 할 일
+1. 바뀐 요구사항과 시나리오의 기댓값을 새 SPEC대로 고친다.
+2. 고칠 것이 없으면 `{out}`를 바꾸지 말고 `out/diff_verdict.json`에 `{{"no_change": true, "reason": "..."}}`를 쓴다.
+3. `out/` 밖의 파일은 만들거나 고치지 않는다.
+"""
+
+STUB_DIR = (ROOT / "pipeline" / "emitter" / "stubs").resolve()
+
+
+def _design_cells(cells: list[Path] | None) -> list[Path]:
+    if not cells:
+        return []
+    out = []
+    for c in cells:
+        p = Path(c).resolve()
+        if p.is_file() and p.parent != STUB_DIR:
+            out.append(p)
+    return out
+
+
+def _inout(l1: dict, tb_lang: str = "cocotb") -> str:
+    if tb_lang == "sv":
+        return ""
     return INOUT_NOTE if any(p.get("dir") == "inout" for p in l1.get("ports", [])) else ""
 
 
-def make_task(name: str, l1: dict, spec: str | Path) -> Task:
+def make_task(name: str, l1: dict, spec: str | Path, tb_lang: str = "cocotb", cells: list[Path] | None = None) -> Task:
     module = l1["module"]
+    out = out_rel(module, tb_lang)
+    dcells = _design_cells(cells)
+    cell_map = {f"cells/{p.name}": p for p in dcells}
+    cnote = CELLS_NOTE if dcells else ""
+    if tb_lang == "sv":
+        inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "l1.json": json.dumps(l1, ensure_ascii=False, indent=1), **cell_map}
+        return Task("verifier", name, SV_TASK.format(module=module, out=out) + cnote, inputs=inputs, tools=False,
+                    outputs=[out], write_scope=["out/"])
     inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "l1.json": json.dumps(l1, ensure_ascii=False, indent=1), "tb_guide.md": GUIDE,
-              f"harness/{module}_harness.py": harness_source(Module(l1))}
-    return Task("verifier", name, TASK.format(module=module, out=out_rel(module)) + _inout(l1), inputs=inputs,
-                outputs=[out_rel(module)], write_scope=["out/"])
+              f"harness/{module}_harness.py": harness_source(Module(l1)), **cell_map}
+    return Task("verifier", name, TASK.format(module=module, out=out) + _inout(l1, tb_lang) + cnote, inputs=inputs,
+                outputs=[out], write_scope=["out/"])
 
 
-def make_revise_task(name: str, l1: dict, spec: str | Path, test_file: Path, approved: list[dict]) -> Task:
+def make_revise_task(name: str, l1: dict, spec: str | Path, test_file: Path, approved: list[dict],
+                     tb_lang: str = "cocotb", cells: list[Path] | None = None) -> Task:
     module = l1["module"]
-    t = make_task(name, l1, spec)
-    t.inputs[out_rel(module)] = Path(test_file)
+    out = out_rel(module, tb_lang)
+    t = make_task(name, l1, spec, tb_lang=tb_lang, cells=cells)
+    t.inputs[out] = Path(test_file)
     t.inputs["approved.json"] = json.dumps(approved, ensure_ascii=False, indent=1)
-    t.text = REVISE.format(module=module, out=out_rel(module)) + _inout(l1)
+    cnote = CELLS_NOTE if _design_cells(cells) else ""
+    tmpl = SV_REVISE if tb_lang == "sv" else REVISE
+    t.text = tmpl.format(module=module, out=out) + _inout(l1, tb_lang) + cnote
     return t
 
 
-def make_augment_task(name: str, l1: dict, spec: str | Path, test_file: Path, diff: dict) -> Task:
+def make_augment_task(name: str, l1: dict, spec: str | Path, test_file: Path, diff: dict,
+                      tb_lang: str = "cocotb", cells: list[Path] | None = None) -> Task:
     module = l1["module"]
-    t = make_task(name, l1, spec)
-    t.inputs[out_rel(module)] = Path(test_file)
+    out = out_rel(module, tb_lang)
+    t = make_task(name, l1, spec, tb_lang=tb_lang, cells=cells)
+    t.inputs[out] = Path(test_file)
     t.inputs["diff.json"] = json.dumps(diff, ensure_ascii=False, indent=1)
-    t.text = AUGMENT.format(module=module, out=out_rel(module)) + _inout(l1)
+    cnote = CELLS_NOTE if _design_cells(cells) else ""
+    t.text = AUGMENT.format(module=module, out=out) + _inout(l1, tb_lang) + cnote
     return t
 
 
-def make_spec_update_task(name: str, l1: dict, spec: str | Path, old_spec: str | Path, test_file: Path, spec_diff: dict) -> Task:
+def make_spec_update_task(name: str, l1: dict, spec: str | Path, old_spec: str | Path, test_file: Path, spec_diff: dict,
+                          tb_lang: str = "cocotb", cells: list[Path] | None = None) -> Task:
     module = l1["module"]
-    t = make_task(name, l1, spec)
-    t.inputs[out_rel(module)] = Path(test_file)
+    out = out_rel(module, tb_lang)
+    t = make_task(name, l1, spec, tb_lang=tb_lang, cells=cells)
+    t.inputs[out] = Path(test_file)
     t.inputs["spec_old.md"] = Path(old_spec)
     t.inputs["spec_diff.json"] = json.dumps(spec_diff, ensure_ascii=False, indent=1)
-    t.text = SPEC_UPDATE.format(module=module, out=out_rel(module)) + _inout(l1)
+    cnote = CELLS_NOTE if _design_cells(cells) else ""
+    tmpl = SV_SPEC_UPDATE if tb_lang == "sv" else SPEC_UPDATE
+    t.text = tmpl.format(module=module, out=out) + _inout(l1, tb_lang) + cnote
     return t
 
 
@@ -197,8 +295,8 @@ def no_change(work: Path) -> str | None:
     return str(v.get("reason", "")) if v.get("no_change") is True else None
 
 
-def check_spec_update(l1: dict, before: str):
-    inner = check(l1, before)
+def check_spec_update(l1: dict, before: str, tb_lang: str = "cocotb", cells: list[Path] | None = None):
+    inner = check(l1, before, tb_lang=tb_lang, cells=cells)
 
     def _check(work: Path) -> list[str]:
         if (reason := no_change(work)) is not None:
@@ -217,9 +315,9 @@ def spec_undefined(work: Path) -> str | None:
     return str(v.get("reason", "")) if v.get("spec_defined") is False else None
 
 
-def check_augment(l1: dict, before: str):
+def check_augment(l1: dict, before: str, tb_lang: str = "cocotb", cells: list[Path] | None = None):
     """테스트를 보강했거나(일반 게이트 + 바뀜), SPEC이 정하지 않았다고 이유와 함께 답했으면 통과."""
-    inner = check(l1, before)
+    inner = check(l1, before, tb_lang=tb_lang, cells=cells)
 
     def _check(work: Path) -> list[str]:
         if (reason := spec_undefined(work)) is not None:
@@ -263,9 +361,48 @@ def api_misuse(tree: ast.AST, l1: dict) -> list[str]:
     return errs[:20]
 
 
-def check(l1: dict, before: str | None = None):
+def _sv_stub(l1: dict) -> str:
+    """출력을 구동하지 않는 가짜 DUT 모듈 (SV 테스트벤치 컴파일·판정 게이트용)."""
+    import re
+    params = ", ".join(f"parameter {p['name']} = {p['default']}" for p in l1.get("params", []))
+    ports = []
+    for p in l1.get("ports", []):
+        for s in (p["signals"] if "bundle" in p else [p]):
+            t = re.sub(r"\b(logic|reg)\b", "wire", s["type"]) if s["dir"] == "inout" else s["type"]
+            ports.append(f"{s['dir']} {t} {s['name']}")
+    return f"`timescale 1ns/1ps\nmodule {l1['module']} {f'#({params}) ' if params else ''}({', '.join(ports)});\nendmodule\n"
+
+
+def check(l1: dict, before: str | None = None, tb_lang: str = "cocotb", cells: list[Path] | None = None):
     """before: 수정 작업이면 고치기 전 테스트 내용 (바뀌지 않았으면 거부)."""
     module = l1["module"]
+
+    if tb_lang == "sv":
+        from pipeline.agents import sim_model
+        import tempfile
+
+        def _check_sv(work: Path) -> list[str]:
+            tb = work / out_rel(module, "sv")
+            src = tb.read_text(encoding="utf-8")
+            if before is not None and src == before:
+                return ["테스트가 바뀌지 않음 (승인된 수정안을 반영해야 함)"]
+            errs = [f"테스트벤치에 없음: {w}" for w in (sim_model.PASS, sim_model.FAIL, "$finish", "`timescale") if w not in src]
+            with tempfile.TemporaryDirectory() as tmp:
+                fake = Path(tmp) / "stub.sv"
+                fake.write_text(_sv_stub(l1), encoding="utf-8")
+                vvp = Path(tmp) / "sim.vvp"
+                tb_top = f"test_{module}"
+                if err := sim_model._compile([fake, tb], tb_top, vvp):
+                    return errs + [f"가짜 DUT와 컴파일 실패 (모듈 이름 `{tb_top}` 또는 포트 불일치): {err}"]
+                try:
+                    p = subprocess.run(["vvp", str(vvp)], cwd=tmp, capture_output=True, text=True, timeout=sim_model.SIM_TIMEOUT_S)
+                    log = p.stdout + p.stderr
+                    if p.returncode == 0 and sim_model.PASS in log and sim_model.FAIL not in log:
+                        errs.append("출력을 구동하지 않는 가짜 DUT가 통과함. 요구사항의 출력값과 변화를 실제로 검사해야 함")
+                except subprocess.TimeoutExpired:
+                    errs.append(f"가짜 DUT 실행이 {sim_model.SIM_TIMEOUT_S}초 안에 끝나지 않음 (워치독 타임아웃과 $finish 필요)")
+            return errs
+        return _check_sv
 
     def _check(work: Path) -> list[str]:
         src = (work / out_rel(module)).read_text(encoding="utf-8")

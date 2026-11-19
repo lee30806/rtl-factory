@@ -384,9 +384,13 @@ class Harness:
             cocotb.start_soon(self._watch_reset(port, active, doms))
         for d, (clk, _) in self.cfg["clocks"].items():
             await ClockCycles(getattr(self.dut, clk), reset_cycles)
-        # 리셋 풀기와 표본 시작은 뒤에서 한다. start 바로 뒤의 send가 모든 도메인의 사이클 0 전에 큐에 들어가야
-        # idle=N이 도메인과 상관없이 사이클 N에 나간다 (P11 R6 axis_async_fifo: 먼저 푼 s 도메인만 한 사이클 늦게 나감)
-        cocotb.start_soon(self._release())
+        # 단일 클럭 도메인은 start()가 끝날 때 리셋 해제와 하강 에지 대기(_release)까지 마쳐,
+        # 테스트가 start() 직후 dut.<포트>.value와 await FallingEdge(clk)로 직접 자극을 넣어도 첫 입력이 덮이지 않게 한다.
+        # 다중 클럭 도메인은 start 바로 뒤의 send가 모든 도메인의 사이클 0 전에 큐에 들어가도록 뒤에서 푼다 (P11 R6 axis_async_fifo).
+        if len(self.cfg["clocks"]) <= 1:
+            await self._release()
+        else:
+            cocotb.start_soon(self._release())
 
     async def _release(self) -> None:
         for d in self.cfg["clocks"]:

@@ -166,11 +166,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="외부 TB를 통과해 선택된 후보가 없을 때 외부 TB 결과로 SPEC을 고쳐 다시 돌리는 최대 횟수 (0이면 하지 않음)")
     ap.add_argument("--skip-verifier", action="store_true",
                     help="외부 TB가 있는 경우 내부 Verifier 에이전트를 생략하고 E2 검증에서 외부 TB를 직접 실행")
+    ap.add_argument("--tb-lang", choices=["cocotb", "sv"],
+                    help="내부 Verifier 에이전트가 생성할 테스트벤치 언어 (cocotb 또는 sv, 기본: roles.json 또는 cocotb)")
     ap.add_argument("--no-isolate", action="store_true", help="테스트용 샌드박스 격리 해제")
     ap.add_argument("--rescore", action="store_true", help="rtl_benchls: 저장된 후보 RTL을 지금의 등가 채점으로 다시 채점 (에이전트 호출 없음)")
     args = ap.parse_args(argv)
 
     roles = roles_mod.load(args.roles)
+    if args.tb_lang:
+        roles.tb_lang = args.tb_lang
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 

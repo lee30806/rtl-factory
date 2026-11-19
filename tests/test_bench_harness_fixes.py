@@ -333,3 +333,92 @@ def test_prompt_doc_structure_reset_extraction_and_domain_refine(tmp_path: Path)
     bad_port = tmp_path / "bad_port.md"
     bad_port.write_text(spec_text.replace("| sys | clk |", "| sys | clk2 |", 1), encoding="utf-8")
     assert any(e.startswith("[2~4절]") for e in spec_writer.gate(bad_port, ir, allow_domain_refine=True))
+
+
+def test_internal_pipeline_bugfixes_and_sv_testbench_mode(tmp_path: Path):
+    """1) Verifier 외부 셀(cells/) 가시성, 2) Arbiter 시나리오 ID(SC-01) 허용 및 other_verifiers_passed,
+    3) Verifier SV 테스트벤치(tb_lang='sv') 게이트 및 sim_sv E2 실행 검증."""
+    import shutil
+    from pipeline.agents import arbiter, roles as roles_mod, verifier
+    from pipeline.verify.run import sim_sv
+
+    l1 = {
+        "module": "crc1",
+        "role": "block_top",
+        "params": [],
+        "domains": [{"name": "sys", "clock": "clk", "edge": "pos", "reset": {"port": "rst", "active": "high", "async": True}}],
+        "ports": [
+            {"name": "clk", "dir": "input", "type": "logic", "domain": "sys"},
+            {"name": "rst", "dir": "input", "type": "logic", "domain": "sys"},
+            {"name": "d", "dir": "input", "type": "logic", "domain": "sys"},
+            {"name": "q", "dir": "output", "type": "logic", "domain": "sys"},
+        ],
+    }
+    spec = tmp_path / "spec.md"
+    spec.write_text(
+        "# crc1 SPEC\n\n## 1. 목적과 범위\n1비트 플립플롭.\n\n## 2. 클럭, 리셋, 전력\n"
+        "| 도메인 | 클럭 포트 | 에지 | 주파수(MHz) | 리셋 포트 | 극성 | 동기/비동기 | 기준 도메인 | 분주비 |\n|---|---|---|---|---|---|---|---|---|\n"
+        "| sys | clk | pos | 100 | rst | high | 비동기 | - | - |\n\n"
+        "## 3. 인터페이스\n| 포트 | 방향 | 타입 | 도메인 | 설명 |\n|---|---|---|---|---|\n"
+        "| clk | input | logic | sys | 클럭 |\n| rst | input | logic | sys | 리셋 |\n| d | input | logic | sys | 입력 |\n| q | output | logic | sys | 출력 |\n\n"
+        "## 4. 파라미터\n없음\n\n## 5. 기능 요구사항\n- FR-01 (필수) rst=1이면 q=0, 아니면 상승 에지에서 q<=d.\n\n"
+        "## 6. 타이밍과 성능\n- TIM-01 (필수) 입력 뒤 1사이클에 출력한다.\n\n## 7. 예외와 코너 케이스\n없음\n\n"
+        "## 8. 예시 시나리오\n### SC-01 정상: 기본 동작\n| 사이클 | d | q |\n|---|---|---|\n| 1 | 1 | 1 |\n\n"
+        "## 9. 구현 제약\n없음\n\n## 10. 열린 질문\n없음\n",
+        encoding="utf-8",
+    )
+    # 1) 외부 제공 셀(cells/data_mem.v)이 Verifier 입력에 포함되는지 확인
+    ext_cell = tmp_path / "data_mem.v"
+    ext_cell.write_text("module data_mem(input clk); endmodule\n", encoding="utf-8")
+    vt_py = verifier.make_task("verifier/v0", l1, spec, tb_lang="cocotb", cells=[ext_cell])
+    assert "cells/data_mem.v" in vt_py.inputs and "제공 외부 서브모듈" in vt_py.text
+
+    # 2) Arbiter가 SC-01(시나리오 ID)도 근거 요구사항(reqs)으로 허용하고 test.sv도 입력에 넣는지 확인
+    arb_work = tmp_path / "arb"
+    (arb_work / "out").mkdir(parents=True, exist_ok=True)
+    (arb_work / "out" / "verdict.json").write_text(
+        json.dumps({"verdict": "test_wrong", "reqs": ["SC-01"], "reason": "클럭 2번 구동", "proposal": "1클럭만 구동"}),
+        encoding="utf-8",
+    )
+    assert arbiter.check(spec)(arb_work) == []
+
+    # 3) Verifier SV 테스트벤치 모드(tb_lang='sv') 및 sim_sv 실행 검증
+    vt_sv = verifier.make_task("verifier/v0", l1, spec, tb_lang="sv", cells=[ext_cell])
+    assert vt_sv.outputs == ["out/test_crc1.sv"] and "cells/data_mem.v" in vt_sv.inputs
+    if shutil.which("iverilog") and shutil.which("vvp"):
+        sv_work = tmp_path / "sv_v0"
+        (sv_work / "out").mkdir(parents=True, exist_ok=True)
+        tb_sv = sv_work / "out" / "test_crc1.sv"
+        tb_sv.write_text(
+            "`timescale 1ns/1ps\n"
+            "module test_crc1;\n"
+            "  logic clk = 0, rst = 1, d = 0, q;\n"
+            "  always #5 clk = ~clk;\n"
+            "  crc1 dut(.clk(clk), .rst(rst), .d(d), .q(q));\n"
+            "  initial begin\n"
+            "    #12; if (q !== 1'b0) begin $display(\"TEST FAILED: [req=FR-01] reset q=%b\", q); $finish; end\n"
+            "    @(negedge clk); rst = 0; d = 1;\n"
+            "    @(posedge clk); #1; if (q !== 1'b1) begin $display(\"TEST FAILED: [req=SC-01] q=%b\", q); $finish; end\n"
+            "    $display(\"TEST PASSED\"); $finish;\n"
+            "  end\n"
+            "endmodule\n",
+            encoding="utf-8",
+        )
+        assert verifier.check(l1, tb_lang="sv")(sv_work) == []
+
+        good_dut = tmp_path / "crc1_good.sv"
+        good_dut.write_text(
+            "`timescale 1ns/1ps\nmodule crc1(input logic clk, input logic rst, input logic d, output logic q);\n"
+            "  always_ff @(posedge clk or posedge rst) if (rst) q <= 1'b0; else q <= d;\nendmodule\n",
+            encoding="utf-8",
+        )
+        bad_dut = tmp_path / "crc1_bad.sv"
+        bad_dut.write_text(
+            "`timescale 1ns/1ps\nmodule crc1(input logic clk, input logic rst, input logic d, output logic q);\n"
+            "  assign q = 1'b0;\nendmodule\n",
+            encoding="utf-8",
+        )
+        r_ok = sim_sv([good_dut], "crc1", tb_sv, tmp_path / "sim_ok")
+        assert r_ok.ok and r_ok.findings == []
+        r_fail = sim_sv([bad_dut], "crc1", tb_sv, tmp_path / "sim_fail")
+        assert not r_fail.ok and r_fail.findings[0].rule == "AssertionError" and "SC-01" in r_fail.findings[0].message
