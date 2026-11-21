@@ -80,6 +80,28 @@ async def basic(dut):
 - **직전 사이클 값으로 같은 사이클 규칙 검사.** "일시정지(ack=1) 동안 valid=0"은 같은 표본의 ack와 valid로 본다. 직전 표본의 ack를
   저장해 두고 이번 valid와 비교하면 풀린 첫 사이클을 위반으로 읽는다 (P11 axis_async_fifo FR-PAUSE-01).
 - **에지 검출 펄스 및 등록 출력 검사 시점.** 클럭 상승 에지에서 등록되어 1사이클 동안 유지되는 펄스는 상승 에지 직후(예: 다음 하강 에지 `await FallingEdge(dut.clk)` 또는 다음 상승 에지 직전)에 검사한다. 펄스가 클럭 에지 전에 먼저 발생하거나 지나간 뒤에 검사하지 않는다.
+- **순차 회로 참조 모델 상태 전이 호출 시점 (Check-then-Update 위반).** 플립플롭의 등록 출력은 클럭 에지 직후 이번 사이클 동안 유지되므로, 표본 비교 전에 `step()`을 미리 호출하여 미래 상태(Q_n+1)와 비교하지 않는다. 반드시 "현재 사이클 출력 검증(Check) → 다음 사이클용 상태 갱신(Update)" 순서로 작성한다.
+
+### 순차 회로 참조 모델과 속성 검사 (Check-then-Update 패턴)
+
+동기식 순차 회로(Sequential Logic)의 레지스터(Flip-Flop) 출력은 클럭 상승 에지에서 갱신되어 그 사이클 동안 유지됩니다. 따라서 속성 검증(CycleTracker)에서 참조 모델과 DUT 출력을 비교할 때는 반드시 **"선 검증 후 갱신 (Check-then-Update)"** 순서를 준수해야 합니다:
+
+```python
+# ❌ 금지 패턴 (Update-then-Check): 1사이클 앞선 미래 상태와 비교되어 불일치 오류 발생!
+div = s.get("DIVIDER", 0)
+exp = self.model.step(div)   # 상태를 먼저 갱신
+if s.get("SD_CLK") != exp:    # Q_n 출력을 Q_n+1 기대값과 비교하게 됨
+    return "mismatch"
+
+# ✅ 올바른 패턴 (Check-then-Update): 현재 사이클의 등록 출력 검증 후 다음 사이클 상태 갱신
+div = s.get("DIVIDER", 0)
+exp = self.model.sd_clk_o    # 1. Check: 이번 사이클에 유효한 등록 출력 검증
+if s.get("SD_CLK") != exp:
+    return f"mismatch: expected {exp}, got {s.get('SD_CLK')}"
+self.model.step(div)         # 2. Update: 다음 사이클 클럭 에지를 위한 참조 모델 상태 갱신
+```
+
+- **입력 신호 표본화 시점**: 하네스가 하강 에지(`negedge CLK`)에서 입력값을 바꿀 때, DUT는 다음 상승 에지(`posedge CLK`)에서 이를 래치합니다. 참조 모델의 상태 전이(`step`) 역시 해당 상승 에지 시점에 유효한 입력값을 기준으로 계산해야 합니다.
 
 ## 시나리오
 

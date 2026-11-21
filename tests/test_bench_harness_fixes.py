@@ -523,3 +523,23 @@ def test_edge_detection_hint_and_micro_timing_rules():
 
     # 일반 모듈은 힌트가 없음
     assert edge_detection_hint("Design a 32-bit ALU.") is None
+
+
+def test_verifier_check_then_update_guideline():
+    """Verifier 가이드 및 프롬프트에 Check-then-Update 순차 회로 검증 규칙이 명시되어 있는지 검증한다."""
+    guide_path = ROOT / "pipeline" / "agents" / "prompts" / "tb_guide.md"
+    if not guide_path.exists():
+        guide_path = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "prompts" / "tb_guide.md"
+    guide_text = guide_path.read_text(encoding="utf-8")
+    assert "Check-then-Update" in guide_text
+    assert "선 검증 후 갱신" in guide_text
+    assert "Update-then-Check" in guide_text
+
+    verifier_path = ROOT / "pipeline" / "agents" / "verifier.py"
+    if not verifier_path.exists():
+        verifier_path = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "verifier.py"
+    verifier_text = verifier_path.read_text(encoding="utf-8")
+    assert "Check-then-Update 원칙" in verifier_text
+    assert "순차 회로 참조 모델 상태 갱신 순서" in verifier_text
+    assert "Check-then-Update 위반" in verifier_text
+
