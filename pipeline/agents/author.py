@@ -55,6 +55,12 @@ TASK = """\
       - 동기 등록 출력: `r_prev <= in; out <= in && !r_prev;` (Non-blocking 대입으로 클럭 에지 Tn에서 `out`이 1로 세트되어 Tn+1까지 유지됨).
       - 불필요하게 `d1 <= in; d2 <= d1; out <= d1 && !d2;`처럼 입력을 2단 쉬프트 레지스터로 지연시키지 않는다. CDC 동기화 셀(`2ff`, `cdc_sync`)이 아닌 일반 단일 클럭 도메인 내부 신호에 다단 지연을 추가하면 테스트벤치의 1사이클 기대 시점을 놓치게 된다.
     - SPEC 6절(`TIM-xx`)이 "클럭 에지에 동기화되어 1사이클 동안 유지"라고 규정하면 `comb` 블록이 아닌 `seq` 블록의 레지스터로 구동한다. 반대로 "입력 변화 즉시 조합 함수로 출력"이라고 명시된 경우에만 `comb`로 구현한다.
+  - **PISO 시프트 레지스터 인덱싱 준수:**
+    - $W$비트 병렬 데이터를 MSB부터 LSB(`MSB to LSB`)로 직렬 출력할 때 카운터 k in [0, W-1]에 대해 직렬 출력 비트는 반드시 `tmp[(W-1) - k]` (8비트인 경우 `tmp[3'd7 - bit_cnt]`)로 슬라이스한다. `tmp[(W-2) - k]` (`tmp[6 - bit_cnt]`)와 같은 1비트 오프셋 오류를 범하지 않는다.
+  - **N비트 카운터 자연 순환(Modulo Wrap-around) 준수:**
+    - N비트 카운터는 SPEC이나 원문이 명시적으로 포화 래치(sticky/saturation latch)를 요구하지 않는 한 $2^N-1$ 이후 $0$으로 자연 순환(`cnt <= cnt + 1`)하도록 구현하며, 자의적으로 `overflowed` 레지스터를 도입해 출력을 영구 고정하지 않는다.
+  - **미구현/비활성화 분기의 Default Fall-through 준수:**
+    - 매크로 등으로 꺼진 연산 코드는 자의적 pass-through(`result <= a`)를 하지 않고 원문 아키텍처 기본 분기(`default: result = a & b;` 등)를 타도록 작성한다.
 {contracts}"""
 
 CONTRACTS = """- `contracts.json`: Architect가 정한, 이 모듈과 형제 모듈 사이 연결의 계약. `carries`(실어 나르는 값의 뜻)와

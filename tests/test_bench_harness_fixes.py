@@ -543,3 +543,38 @@ def test_verifier_check_then_update_guideline():
     assert "순차 회로 참조 모델 상태 갱신 순서" in verifier_text
     assert "Check-then-Update 위반" in verifier_text
 
+
+def test_dataset_prompt_spec_discrepancy_resolution_guidelines():
+    """ChipVerilog default fall-through, CVDP PISO indexing, RealBench modulo wrap-around 지침이
+    to_spec.py, ir_guide.md, author.py, repair.py에 명시되어 있는지 검증한다."""
+    if (ROOT / "experiments").exists():
+        from experiments.bench.common.to_spec import BENCH_SPEC_TASK
+    else:
+        from src.rtl_factory.bench.common.to_spec import BENCH_SPEC_TASK
+
+    assert "비활성화/미구현 연산 코드의 아키텍처 디폴트 분기 유지" in BENCH_SPEC_TASK
+    assert "N비트 카운터 자연 순환(Modulo Wrap-around) 기본 원칙" in BENCH_SPEC_TASK
+    assert "미참조 팬텀 포트 처리" in BENCH_SPEC_TASK
+
+    ir_guide = ROOT / "pipeline" / "agents" / "prompts" / "ir_guide.md"
+    if not ir_guide.exists():
+        ir_guide = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "prompts" / "ir_guide.md"
+    ir_text = ir_guide.read_text(encoding="utf-8")
+    assert "PISO (병렬 입력 직렬 출력) 시프트 레지스터 슬라이싱 오프셋" in ir_text
+    assert "tmp[(W-1) - k]" in ir_text
+    assert "N비트 카운터 자연 순환 (Modulo Wrap-around)" in ir_text
+
+    author = ROOT / "pipeline" / "agents" / "author.py"
+    if not author.exists():
+        author = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "author.py"
+    author_text = author.read_text(encoding="utf-8")
+    assert "PISO 시프트 레지스터 인덱싱 준수" in author_text
+    assert "N비트 카운터 자연 순환(Modulo Wrap-around) 준수" in author_text
+
+    repair = ROOT / "pipeline" / "agents" / "repair.py"
+    if not repair.exists():
+        repair = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "repair.py"
+    repair_text = repair.read_text(encoding="utf-8")
+    assert "PISO 슬라이싱, 카운터 순환, 미구현 분기 오류 수정" in repair_text
+
+
