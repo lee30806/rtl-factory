@@ -67,18 +67,20 @@ class Run:
     def __init__(self, run_dir: Path, spec: Path, roles: roles_mod.Roles, cells: list[Path] | None = None,
                  isolate: bool = True, seeds: list[int] | None = None, seed: dict | None = None,
                  max_modules: int | None = None, external_tb=None, incdirs: list[Path] | None = None, directives: str = "",
-                 tb_lang: str | None = None):
+                 tb_lang: str | None = None, co_verify: bool = True):
         """seed: 이전 실행에서 이어 가는 재실행(환류). {"parent": 실행 디렉터리, "kind": "external_repair" | "spec_change",
         "failures": {모듈: 분류된 외부 리포트 항목}, "old_spec": 이전 SPEC, "spec_diff": spec_diff.diff 결과}.
         max_modules: Architect의 하위 모듈 수 상한 (P11 R6 재생성). 상태에 남아 이어 가기에서도 같다.
         incdirs: 셀 RTL이 `include하는 헤더 디렉터리. lint, 시뮬레이션, 번역기 검사의 Verilator 인자로 넘긴다 (ChipVerilog or1200 timescale.v).
         directives: 설계 헤더가 준 컴파일러 지시문(`define 줄). 방출하는 Block Top 파일 끝에 붙인다. IR은 매크로를 값으로 풀어
           쓰므로 정의가 사라지는데, 같은 헤더를 쓰는 외부 테스트벤치가 그 매크로 이름을 쓴다 (ChipVerilog cordic `XY_BITS).
-        external_tb: 외부 테스트벤치 실행 콜백 `(sv_files, top, eval_dir) -> {"ok": bool, "stage": str, "log_tail": str}`. 지정 시 Verifier 에이전트를 생략한다.
-        tb_lang: Verifier 테스트벤치 언어 ("cocotb" 또는 "sv"). 기본값은 roles.tb_lang ("cocotb")."""
+        external_tb: 외부 테스트벤치 실행 콜백 `(sv_files, top, eval_dir) -> {"ok": bool, "stage": str, "log_tail": str}`.
+        tb_lang: Verifier 테스트벤치 언어 ("cocotb" 또는 "sv"). 기본값은 roles.tb_lang ("cocotb").
+        co_verify: 외부 테스트벤치와 내부 Verifier를 E2에서 실시간 동시 검증(Co-Verification)할지 여부 (기본: True)."""
         self.dir, self.spec_path, self.roles = Path(run_dir).resolve(), Path(spec).resolve(), roles
         self.cells, self.isolate, self.seeds = cells if cells is not None else STUB_CELLS, isolate, seeds or [1]
         self.external_tb = external_tb
+        self.co_verify = co_verify
         self.tb_lang = tb_lang or getattr(roles, "tb_lang", "cocotb")
         self.inc_args = [f"-I{Path(d).resolve()}" for d in (incdirs or [])]
         self.directives = directives
@@ -469,7 +471,7 @@ class Run:
         """Verifier 후보들의 테스트 파일. Block Top의 L1만 준다 (L2, L3, RTL은 없음)."""
         if (s := self.done("verifiers")) is not None:
             return s
-        if self.external_tb is not None:
+        if self.external_tb is not None and not self.co_verify:
             if (ps := self.parent_state()) is not None:
                 self.seed_modules(ps)
             self.event("verifiers", "외부 테스트벤치(external_tb) 사용으로 Verifier 에이전트 생략")
@@ -616,6 +618,21 @@ class Run:
         (tdir / f"{top}_trace.json").write_text(json.dumps(trace_names(top_m, mods)), encoding="utf-8")
         e2 = []
         pads, sim_top = pad_top(top_m.raw, out / "pad")   # inout Block Top은 패드 래퍼를 top으로
+
+        # 1. 내부 Verifier 실행
+        if tbs and tbs != ["external_tb"]:
+            for k, tb in enumerate([] if frag_lint else tbs):
+                if self.tb_lang == "sv" or Path(tb).suffix == ".sv":
+                    r = sim_sv(files, top, Path(tb), out / f"sim_v{k}", build_args=self.inc_args)
+                    res_dir = out / f"sim_v{k}"
+                else:
+                    r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
+                            trace=tdir / f"{top}_trace.json", build_args=self.inc_args)
+                    res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
+                e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
+                                                                   for f in r.findings], "out": str(res_dir)})
+
+        # 2. 외부 TB 실행 (단독 실행이거나 co_verify인 경우)
         if self.external_tb is not None:
             if not frag_lint:
                 ext_dir = out / "sim_ext"
@@ -629,18 +646,8 @@ class Run:
                     msg = ext_r.get("log_tail") or ext_r.get("error") or "외부 테스트벤치 실패"
                     findings = [{"test": "external_tb", "rule": rule, "message": str(msg)[:800], **self.external_evidence(ext_r)}]
                 e2.append({"verifier": "ext", "ok": ext_ok, "findings": findings, "out": str(ext_dir),
+                           "is_external": True,
                            "grader_defect": "" if ext_ok else str(ext_r.get("grader_defect") or "")})
-        else:
-            for k, tb in enumerate([] if frag_lint else tbs):
-                if self.tb_lang == "sv" or Path(tb).suffix == ".sv":
-                    r = sim_sv(files, top, Path(tb), out / f"sim_v{k}", build_args=self.inc_args)
-                    res_dir = out / f"sim_v{k}"
-                else:
-                    r = sim([*files, *pads], sim_top, Path(tb).stem, Path(tb).parent, out / f"sim_v{k}", seeds=self.seeds, harness_dir=hdir,
-                            trace=tdir / f"{top}_trace.json", build_args=self.inc_args)
-                    res_dir = out / f"sim_v{k}" / "tb_out" / str(self.seeds[0])
-                e2.append({"verifier": k, "ok": r.ok, "findings": [{"test": f.test, "rule": f.rule, "message": f.message[:300]}
-                                                                   for f in r.findings], "out": str(res_dir)})
         return {"e1": [{"type": c.type, "node": c.node, "module": c.module, "message": c.message[:200],
                         "severity": c.source.get("severity")} for c in e1c],
                 "e2": e2, "py_equiv": py_equiv,
@@ -735,9 +742,10 @@ class Run:
 
     def arbitrate(self, lib: dict, top: str, tbs: list[str], gname: str, mods: list[str], c: int, sts: dict,
                   v: dict, tag: str, claim: dict | None = None, repeated: dict | None = None,
-                  other_passed: list[int] | None = None) -> str:
+                  other_passed: list[int] | None = None, external_tb_status: dict | None = None) -> str:
         """Verifier v의 실패를 Arbiter가 판정한다. test_wrong이면 기댓값 수정 승인 대기, spec_ambiguous면 검토 항목과 대기.
-        claim은 Repair의 L1 변경 요청 (RTL로는 기댓값을 맞출 수 없다는 주장), repeated는 Repair를 거듭해도 같은 테스트가 실패한 경위."""
+        claim은 Repair의 L1 변경 요청 (RTL로는 기댓값을 맞출 수 없다는 주장), repeated는 Repair를 거듭해도 같은 테스트가 실패한 경위.
+        external_tb_status는 공식 외부 TB의 실행 결과 (Co-Verification 시 외부 TB 판정을 최우선으로 반영)."""
         rep = self.failure_report(lib, top, v)
         mismatch = rep["report"] or rep
         if other_passed:
@@ -746,9 +754,13 @@ class Run:
             mismatch = {**mismatch, "repair_claim": claim}
         if repeated:
             mismatch = {**mismatch, "repeated_failure": repeated}
+        if external_tb_status:
+            mismatch = {**mismatch, "external_tb": external_tb_status}
         rev = self.state.get("tb_rev", 0)   # 테스트가 수정되면 같은 Repair 횟수에서도 다시 판정한다
         name = f"arbiter/{gname}/c{c}/{tag}" + (f"/v{v['verifier']}" if claim or repeated else "") + (f"/t{rev}" if rev else "") + self.arch_tag()
-        ares = self.agent("arbiter", arbiter.make_task(name, self.spec_path, mismatch, Path(tbs[v["verifier"]])),
+        tb_idx = v.get("verifier")
+        tb_file = Path(tbs[tb_idx]) if isinstance(tb_idx, int) and tb_idx < len(tbs) else self.spec_path
+        ares = self.agent("arbiter", arbiter.make_task(name, self.spec_path, mismatch, tb_file),
                           arbiter.check(self.spec_path))
         vj = json.loads(Path(ares.outputs[arbiter.OUT]).read_text()) if ares.ok else {"verdict": "spec_ambiguous"}
         verdict = vj["verdict"]
@@ -878,7 +890,29 @@ class Run:
                 save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]],
                          comb_paths=len(paths) if rule else None)
                 break
+
+            # Co-Verification 불일치 및 갭 분석 (외부 TB vs 내부 Verifier)
+            ext_entry = next((x for x in vres["e2"] if x.get("is_external") or x.get("verifier") == "ext"), None)
+            internal_failed = [x for x in vres["e2"] if (not x.get("is_external") and x.get("verifier") != "ext") and not x["ok"]]
+            ext_ok = ext_entry.get("ok") if ext_entry else None
+            ext_status = {"ok": ext_ok, "stage": ext_entry.get("out"), "findings": ext_entry.get("findings", [])} if ext_entry else None
+
+            # Case 2: 외부 TB는 통과(PASS)했으나 내부 Verifier만 실패한 경우 (내부 Verifier 결함형 갭)
+            # 외부 공식 골든 채점 기준을 이미 만족하였으므로, 내부 Verifier 결함으로 인한 불필요한 Repair/승인 상한 탈락을 방지하고 즉시 승인(Early Acceptance)
+            if ext_ok is True and internal_failed:
+                self.review("CO_VERIFY_PASS", f"{gname} 후보 {c}: 외부 TB(공식 채점 기준)가 통과(PASS)하여 "
+                            f"내부 Verifier 결함({len(internal_failed)}건)에도 불구하고 RTL을 승인·합격 처리함",
+                            ext_entry.get("out", ""))
+                rule = feedthrough_rule(self.spec_path.read_text(encoding="utf-8"))
+                save_all(status="pass", lint=len(vres["e1"]), outputs=[x["out"] for x in vres["e2"]],
+                         comb_paths=None, co_verify_ext_pass=True)
+                break
+
             failed = [x for x in vres["e2"] if not x["ok"]]
+            # 만약 외부 TB가 실패했으면 외부 TB를 실패 목록 최우선으로 배치
+            if ext_entry and not ext_ok:
+                failed = [ext_entry] + [x for x in failed if x != ext_entry]
+
             if failed and all(x.get("grader_defect") for x in failed):
                 # 외부 채점이 판정을 내리지 못함 (채점 도구 오류): 후보를 고칠 근거가 없으므로 Repair하지 않고 사람에게 남긴다
                 why = failed[0]["grader_defect"]
@@ -927,11 +961,11 @@ class Run:
                 save_all(status="waiting_approval", pending=pid)
                 break
             skip = sts[mods[0]].get("skip_arbiter", [])   # 사람이 기댓값 수정을 거절한 Verifier: 테스트가 맞으므로 Repair로
-            single = self.external_tb is None and bool(failed) and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip
+            single = bool(failed) and len(failed) < len(vres["e2"]) and failed[0]["verifier"] not in skip
             if single:
                 # 한 Verifier에서만 실패: 그 Verifier의 오류일 수 있으므로 Arbiter가 판정한다
                 verdict = self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, failed[0], f"r{total}",
-                                         other_passed=passed_vs)
+                                         other_passed=passed_vs, external_tb_status=ext_status)
                 if verdict in ("test_wrong", "spec_ambiguous"):
                     break
             # 같은 테스트가 Repair를 거듭해도 같은 이유로 실패: 테스트 쪽 문제일 수 있으므로 상한 전에 Arbiter가 판정한다 (P8 회고)
@@ -940,12 +974,12 @@ class Run:
             n = first.get("fail_sig_n", 0) + 1 if failed and first.get("fail_sig") == sig else 1
             save_all(fail_sig=sig, fail_sig_n=n)
             after = self.roles.limits.get("arbiter_after_repeats", 2)
-            if self.external_tb is None and failed and not single and n > after and sig not in first.get("repeat_arbitrated", []):
+            if failed and not single and n > after and sig not in first.get("repeat_arbitrated", []):
                 save_all(repeat_arbitrated=first.get("repeat_arbitrated", []) + [sig])
                 repeated = {"repairs": n - 1, "modules": mods,
                             "note": f"Repair {n - 1}번 뒤에도 같은 테스트가 같은 이유로 실패함"}
                 verdicts = [self.arbitrate(lib, top_ir["module"], tbs, gname, mods, c, sts, v, f"r{total}/repeat", repeated=repeated,
-                                           other_passed=passed_vs)
+                                           other_passed=passed_vs, external_tb_status=ext_status)
                             for v in failed if v["verifier"] not in skip]
                 if any(x in ("test_wrong", "spec_ambiguous") for x in verdicts):
                     break
@@ -1342,7 +1376,7 @@ class Run:
                 return self.report()
             tbs = self.step_verifiers(tree["top"])
             if tbs:
-                if self.external_tb is None:
+                if self.external_tb is None or self.co_verify:
                     tbs = self.apply_decisions(tree, tbs)
                 tree = self.apply_lead_decisions(tree)
             if not tbs:

@@ -29,6 +29,9 @@ SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 �
 - `mismatch.json`: 불일치 리포트. `first_failure`의 expected는 참조 모델의 기댓값, got은 RTL의 실제값이다.
   `fsm_trace`, `fanin.values`는 그 시점 전후의 내부 값, `spec.clauses`는 관련 요구사항이다
 - `test.py` (또는 `test.sv`): 참조 모델과 테스트 시나리오 (기댓값이 어떻게 만들어졌는지)
+- `mismatch.json`에 `external_tb`가 있으면: **외부 테스트벤치는 공식 채점 기준(Ground Truth)이며 최우선 순위(Priority 1)**다.
+  - **외부 TB 통과 (`external_tb.ok == true`)**: 내부 Verifier가 실패했더라도 RTL은 외부 공식 골든 규격을 이미 완벽히 만족한다. 따라서 내부 Verifier의 테스트 코드에 구현 결함(예: 과도한 제약, 클럭 하강 에지 대기 없는 샘플링 에지 타이밍 오차, 비동기 리셋 모델 동기화 불일치 등)이 있는 것이므로 **반드시 `test_wrong`으로 판정**한다. 정상인 RTL을 고치려 하지 않고 내부 테스트벤치를 수정·완화하거나 외부 TB 합격을 인정하도록 제안한다.
+  - **외부 TB 실패 (`external_tb.ok == false`)**: 내부 Verifier가 통과했거나 실패했거나 관계없이, 공식 채점 기준을 만족하지 못했으므로 **반드시 `rtl_wrong`으로 판정**한다. 외부 TB의 진단 내용(`diagnosis`, `log_tail`, 불일치 트레이스)을 최우선 근거로 삼아 RTL 수정(Repair) 계획을 작성한다.
 - `mismatch.json`에 `other_verifiers_passed`가 있으면: **같은 RTL 후보가 다른 독립 Verifier(`other_verifiers_passed`)의 테스트벤치는 모두 통과**했다는 뜻이다.
   이 경우 RTL은 정상인데 실패한 테스트 코드에 구현 결함(예: 입력 구동 헬퍼 안의 `FallingEdge`/`RisingEdge`와 호출부의 클럭 대기가 겹쳐 클럭 에지가 2번 이상 지난 뒤
   1사이클 기댓값과 비교, 리셋 해제 타이밍 오류, `h.drain()` 동안 입력이 0으로 바뀌어 마지막 사이클 속성이 깨짐, 외부 서브모듈이나 미정의 초기값을 임의로 0으로 가정 등)이 있는지

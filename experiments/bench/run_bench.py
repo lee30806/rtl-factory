@@ -56,6 +56,7 @@ def _run_suite(
     spec_dir: Path | None = None,
     ext_fix_rounds: int = 1,
     skip_verifier: bool = False,
+    co_verify: bool = True,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_by_id: dict[str, BenchResult] = {}
@@ -93,6 +94,7 @@ def _run_suite(
                 spec_dir=spec_dir,
                 ext_fix_rounds=ext_fix_rounds,
                 skip_verifier=skip_verifier,
+                co_verify=co_verify,
             )
         if res.pipeline_status == "paused_quota":
             quota_event.set()
@@ -166,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="외부 TB를 통과해 선택된 후보가 없을 때 외부 TB 결과로 SPEC을 고쳐 다시 돌리는 최대 횟수 (0이면 하지 않음)")
     ap.add_argument("--skip-verifier", action="store_true",
                     help="외부 TB가 있는 경우 내부 Verifier 에이전트를 생략하고 E2 검증에서 외부 TB를 직접 실행")
+    ap.add_argument("--no-co-verify", dest="co_verify", action="store_false", default=True,
+                    help="내부 Verifier와 외부 TB의 실시간 동시 검증(co-verify)을 끄고 순차 실행")
     ap.add_argument("--tb-lang", choices=["cocotb", "sv"],
                     help="내부 Verifier 에이전트가 생성할 테스트벤치 언어 (cocotb 또는 sv, 기본: roles.json 또는 cocotb)")
     ap.add_argument("--no-isolate", action="store_true", help="테스트용 샌드박스 격리 해제")
@@ -236,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             spec_dir=args.spec_dir,
             ext_fix_rounds=args.ext_fix_rounds,
             skip_verifier=args.skip_verifier,
+            co_verify=args.co_verify,
         )
         return 0 if (s_sum["total"] > 0 or h_sum["total"] > 0) else 1
 
@@ -252,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         spec_dir=args.spec_dir,
         ext_fix_rounds=args.ext_fix_rounds,
         skip_verifier=args.skip_verifier,
+        co_verify=args.co_verify,
     )
     if args.mode == "spec":
         return 0 if summary["total"] > 0 and summary["counts"]["spec_gate_pass"] > 0 else 1

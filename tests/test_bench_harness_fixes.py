@@ -578,3 +578,26 @@ def test_dataset_prompt_spec_discrepancy_resolution_guidelines():
     assert "PISO 슬라이싱, 카운터 순환, 미구현 분기 오류 수정" in repair_text
 
 
+def test_co_verify_and_external_tb_priority_guidelines():
+    """Arbiter 가이드에 외부 TB 최우선 순위(Priority 1) 지침이 명시되어 있고,
+    scheduler.run.Run 및 runner가 co_verify 옵션을 기본 지원하는지 검증한다."""
+    arbiter_path = ROOT / "pipeline" / "agents" / "arbiter.py"
+    if not arbiter_path.exists():
+        arbiter_path = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "arbiter.py"
+    arbiter_text = arbiter_path.read_text(encoding="utf-8")
+    assert "외부 테스트벤치는 공식 채점 기준(Ground Truth)이며 최우선 순위(Priority 1)" in arbiter_text
+    assert "external_tb.ok == true" in arbiter_text
+    assert "external_tb.ok == false" in arbiter_text
+    assert "반드시 `test_wrong`으로 판정" in arbiter_text
+    assert "반드시 `rtl_wrong`으로 판정" in arbiter_text
+
+    scheduler_path = ROOT / "pipeline" / "scheduler" / "run.py"
+    if not scheduler_path.exists():
+        scheduler_path = ROOT / "src" / "rtl_factory" / "pipeline" / "scheduler" / "run.py"
+    scheduler_text = scheduler_path.read_text(encoding="utf-8")
+    assert "co_verify: bool = True" in scheduler_text
+    assert "CO_VERIFY_PASS" in scheduler_text
+    assert "co_verify_ext_pass" in scheduler_text
+
+
+

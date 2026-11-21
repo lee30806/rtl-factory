@@ -143,6 +143,7 @@ def run_pipeline_unattended(
     max_arch_revisions: int = 1,
     max_modules: int | None = None,
     external_tb: Any = None,
+    co_verify: bool = True,
     incdirs: list[Path] | None = None,
     seed: dict[str, Any] | None = None,
     directives: str = "",
@@ -155,7 +156,7 @@ def run_pipeline_unattended(
 
     while True:
         runner = Run(run_dir, spec_path, roles, cells=cells, isolate=isolate, max_modules=max_modules, external_tb=external_tb,
-                     incdirs=incdirs, seed=seed, directives=directives)
+                     incdirs=incdirs, seed=seed, directives=directives, co_verify=co_verify)
         rep = runner.execute()
         if rep["status"] != "waiting_approval" or not auto_approve:
             return rep, auto_history
@@ -488,8 +489,10 @@ def run_bench_item(
     spec_dir: Path | None = None,
     ext_fix_rounds: int = 1,
     skip_verifier: bool = False,
+    co_verify: bool = True,
 ) -> BenchResult:
     """단일 벤치마크 문제를 입력 변환(to_spec) → 무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정까지 수행한다.
+    co_verify=True이면 E2 검증 단계에서 내부 Verifier와 외부 TB를 동시 검증하고, 외부 TB 결과를 우선하여 불일치를 조정한다.
     외부 TB를 통과해 선택된 후보가 없으면 외부 TB 결과로 SPEC을 고쳐 ext_fix_rounds번까지 다시 돌린다 (ext_fix.py)."""
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -567,7 +570,7 @@ def run_bench_item(
         deduped_cells.append(cp)
     cells = deduped_cells
     opts = dict(isolate=isolate, auto_approve=auto_approve, max_auto_approves=max_auto_approves,
-                max_arch_revisions=max_arch_revisions, skip_verifier=skip_verifier)
+                max_arch_revisions=max_arch_revisions, skip_verifier=skip_verifier, co_verify=co_verify)
     first = run_and_score(item, out_dir / "run", out_dir / "eval", spec_path, roles, cells, **opts)
     agent_runs = spec_agent_runs + int(first["rep"].get("agent_runs", 0))
 
@@ -713,14 +716,16 @@ def dir_usage(root: Path) -> dict[str, Any]:
 def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Path, roles: roles_mod.Roles,
                   cells: list[Path], isolate: bool = True, auto_approve: bool = True, max_auto_approves: int = 3,
                   max_arch_revisions: int = 1, max_modules: int | None = None, skip_verifier: bool = False,
-                  seed: dict[str, Any] | None = None) -> dict[str, Any]:
+                  co_verify: bool = True, seed: dict[str, Any] | None = None) -> dict[str, Any]:
     """무인 파이프라인 실행(Run) → 후보별 외부 채점 및 PPA 측정 → golden 선택.
-    skip_verifier면 외부 TB가 E2 검증이 되고, 실패 시 Repair가 볼 TB 원문·기대값 파일을 결과에 붙인다."""
-    tb_files = external_tb_files(item) if skip_verifier else {}
+    co_verify면 내부 Verifier와 외부 TB를 E2에서 실시간 동시 검증하고, skip_verifier면 외부 TB만 E2 검증으로 실행한다."""
+    tb_files = external_tb_files(item)
 
     def ext_tb_fn(sv_files, _top, eval_dir):
         r = evaluate_rtl(item, sv_files, eval_dir)
         return r if r.get("ok") else {**r, "tb_files": tb_files}
+
+    use_ext_tb = ext_tb_fn if (co_verify or skip_verifier) else None
 
     rep, auto_decs = run_pipeline_unattended(
         run_dir,
@@ -732,7 +737,8 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
         max_auto_approves=max_auto_approves,
         max_arch_revisions=max_arch_revisions,
         max_modules=max_modules,
-        external_tb=ext_tb_fn if skip_verifier else None,
+        external_tb=use_ext_tb,
+        co_verify=co_verify and not skip_verifier,
         incdirs=[Path(d) for d in item.incdirs],
         seed=seed,
         directives=header_directives(item),
