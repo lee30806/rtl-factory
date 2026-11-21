@@ -157,9 +157,13 @@ def cell_port_errors(children: dict[str, dict], cells: list[Path] | None) -> lis
         valid = set(cell_ports[n])
         used = set()
         for d in c.get("domains", []):
-            for k in ("clock", "reset"):
-                if d.get(k):
-                    used.add(d[k])
+            if d.get("clock"):
+                used.add(d["clock"])
+            rst = d.get("reset")
+            if isinstance(rst, str):
+                used.add(rst)
+            elif isinstance(rst, dict) and rst.get("port"):
+                used.add(rst["port"])
         for b in c.get("ports", []):
             for sig in b.get("signals", [b]):
                 if sig.get("name"):

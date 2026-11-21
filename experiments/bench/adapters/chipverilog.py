@@ -224,7 +224,8 @@ def _verify(text: str, name: str, root: Path, timeout: int) -> tuple[dict | None
     cdir.mkdir(parents=True, exist_ok=True)
     (cdir / f"{name}_t1.v").write_text(text, encoding="utf-8")
     p = subprocess.run([sys.executable, str(TOOL), "verify", str(cdir), "--result-root", str(root / "result_root"),
-                        "--report-dir", str(root / "reports")], cwd=CV_ROOT, capture_output=True, text=True, timeout=timeout)
+                        "--report-dir", str(root / "reports"), "--timeout", str(timeout)],
+                       cwd=CV_ROOT, capture_output=True, text=True, timeout=timeout + 30)
     (root / "verify.log").write_text(p.stdout + p.stderr, encoding="utf-8")
     rf = cdir / f"{name}_t1" / "result.json"
     return (json.loads(rf.read_text(encoding="utf-8")) if rf.exists() else None), cdir / f"{name}_t1", p.stdout + p.stderr
