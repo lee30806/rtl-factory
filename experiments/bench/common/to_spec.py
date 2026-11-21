@@ -187,7 +187,7 @@ BENCH_SPEC_TASK = """\
 
 ## 입력
 - `template.md`: SPEC 작성 템플릿. 형식 규칙(제목, 10개 섹션 이름과 순서, 요구사항 ID 줄, 시나리오 표, 열린 질문)을 그대로 따른다
-- `tables.md`: 모듈 헤더와 원문에서 추출한 2~4절 초기 표. 3절의 포트(이름·방향·타입)와 4절의 파라미터는 헤더 계약이므로 그대로 유지하되, 2절의 리셋 동기(`동기`/`비동기`)나 리셋 극성(`high`/`low`)이 `prompt.txt` 원문 설명과 다르면 `prompt.txt` 원문에 맞게 2절 표를 바로잡는다
+- `tables.md`: 모듈 헤더와 원문에서 추출한 2~4절 초기 표. 3절의 포트(이름·방향·타입)와 4절의 파라미터는 헤더 계약이므로 그대로 유지하되, 2절의 리셋 동기(`동기`/`비동기`)나 리셋 극성(`high`/`low`)이 `prompt.txt` 원문 설명과 다르면 `prompt.txt` 원문에 맞게 2절 표를 바로잡는다. 리셋 동기는 원문이 동기/비동기(synchronous/asynchronous)라는 말이나 감응 목록 코드로 밝힌 경우만 명시로 본다. "클럭 상승 에지에서 rst가 인가되면" 같은 동작 서술은 명시가 아니므로 `비동기`를 유지하고 열린 질문에 [LESSON]으로 남긴다
 - `prompt.txt`: 벤치마크 원본 자연어 명세 전문
 - `header.sv`: 포트와 파라미터가 선언된 모듈 헤더
 - `notes.json`: 고정 파라미터, 매크로 상수, 재사용 하위 셀 정보, 제공 include에 정의되지 않은 구성 매크로(`config_macros`),
@@ -204,7 +204,7 @@ BENCH_SPEC_TASK = """\
 - 작성 후 벤치 검사(`PROMPT_COVERAGE`)가 `prompt.txt`의 식별자·비트 범위·수치 리터럴 중 SPEC에 없는 것을 알려 주면, 그 항목을
   5절 디코드 표, 7절 경계 조건, 9절 필수 구조 가운데 맞는 곳에 넣는다.
 - 제목은 반드시 `# {top} SPEC`으로 쓴다.
-- **2절, 3절, 4절은 `tables.md`를 기준으로 넣되, 3절의 포트(이름·방향·타입)와 4절의 파라미터는 바꾸지 않는다.** 단, `prompt.txt` 원문이 리셋 동기(`동기`/`비동기`)나 리셋 극성(`high`/`low`)을 `tables.md` 2절과 다르게 명시한 경우에는 `prompt.txt` 원문에 맞게 2절 표의 리셋 동기·극성을 수정한다.
+- **2절, 3절, 4절은 `tables.md`를 기준으로 넣되, 3절의 포트(이름·방향·타입)와 4절의 파라미터는 바꾸지 않는다.** 단, `prompt.txt` 원문이 리셋 동기(`동기`/`비동기`, 동기/비동기라는 말이나 감응 목록 코드로만 명시)나 리셋 극성(`high`/`low`)을 `tables.md` 2절과 다르게 명시한 경우에는 `prompt.txt` 원문에 맞게 2절 표의 리셋 동기·극성을 수정한다.
 - 1절 (`## 1. 목적과 범위`): 모듈의 목적을 한 문단으로 설명하고, 범위 밖 항목을 명시한다.
   - **동작 흐름 소절:** `prompt.txt`에 처리 순서 서술(Processing Flow, 동작 개요, 단계별 설명)이 있으면 1절 끝에 `### 동작 흐름`
     소절을 두고 그 서술을 요약하지 않고 옮긴다 (문장 수 제한 없음). 5~7절 요구사항의 근거 문맥이 되어 Author가 해석할 여지를 줄인다.
@@ -445,13 +445,13 @@ def infer_reset_and_clock_traits(prompt_text: str, clk_port: str, rst_port: str 
             combined,
         )
     ))
-    # "synchronous reset" 외에 "rst (..., Synchronous to clk)", "reset synchronized to the clock", "Type: Synchronous", "On rising edge of clk, if rst..."도 동기 명시로 본다
+    # 동기 명시는 "synchronous reset", "rst (..., Synchronous to clk)", "reset synchronized to the clock", "Type: Synchronous", "동기 리셋"처럼
+    # 동기라는 말이 있을 때만이다. "On rising edge of clk, if rst..." 같은 동작 서술은 명시로 보지 않는다 (ChipVerilog register_file: 정답은 비동기)
     explicit_sync = (p_async is False) or (p_async is None and bool(re.search(
         rf"\bsync(?:hronous|hronously)?\s+(?:[\w-]+\s+){{0,2}}reset\b"
         rf"|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchronous(?:ly)?\s+(?:to|with)\b"
         rf"|\b(?:reset|rst|{rl})\b[^.\n]{{0,40}}\bsynchroni[sz]ed\s+(?:to|with)\b"
         rf"|reset[^\n]{{0,40}}\n+(?:\s*[-*+]\s*[^\n]+\n)*?\s*[-*+]?\s*type\s*:\s*synchronous\b"
-        rf"|(?:on|at)\s+(?:every\s+|each\s+|the\s+)?(?:rising|positive|falling|negative)\s+edge\s+of\s+(?:the\s+)?(?:clock(?:\s+signal)?\s*(?:\({ck_l}\))?|{ck_l})\s*,\s*if\s+(?:the\s+)?(?:reset(?:\s+signal)?\s*(?:\({rl}\))?|{rl})\b"
         rf"|동기\s*리셋|리셋\s*동기\s*\|\s*동기", text_low)))
     if hint_low and not re.search(rf"(?:or|,)\s*(?:posedge|negedge)?\s*{rl}\b", hint_low) and re.search(rf"always\s*@\s*\(\s*(?:posedge|negedge)\s+{ck_l}\s*\)", hint_low):
         is_async = False

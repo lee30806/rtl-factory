@@ -19,6 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from experiments.bench.common import mismatch_trace
 from experiments.bench.common.modules import merge_candidate, modules_in_files, module_names
 from experiments.bench.common.schema import BenchItem, EvalSpec
 
@@ -32,6 +33,8 @@ VERILATOR_FLAGS = ["-cc", "--exe", "--binary", "--timing", "--assert", "-j", "0"
                    "-Wno-CASEINCOMPLETE", "-Wno-CASEOVERLAP", "-Wno-LATCH", "-Wno-UNOPTFLAT", "-Wno-MULTIDRIVEN",
                    "-Wno-ASCRANGE", "-Wno-EOFNEWLINE", "-Wno-TIMESCALEMOD"]
 _MISMATCH_RE = re.compile(r"Hint: Output '(\w+)' has (\d+) mismatches\. First mismatch occurred at time (\d+)")
+# 다른 TB 형식: "Hint: Output m_wb_cyc_o: 473 errors, first at time 265" (sd_fifo_tx_filler 등)
+_MISMATCH2_RE = re.compile(r"Hint: Output `?'?(\w+)'?`?: (\d+) errors, first at time (\d+)")
 _TOTAL_RE = re.compile(r"Total mismatched samples is (\d+) out of (\d+) samples")
 _FIG_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
@@ -121,7 +124,8 @@ def load_realbench(conv_path: Path | None, src_root: Path, raw_root: Path | None
 
 def diagnose(sim_log: str) -> tuple[list[dict[str, Any]], tuple[int, int] | None]:
     """TB 출력에서 (틀린 출력 목록, (총 불일치, 총 표본))을 뽑는다."""
-    bad = [{"output": o, "mismatches": int(n), "first_time": int(t)} for o, n, t in _MISMATCH_RE.findall(sim_log)]
+    bad = [{"output": o, "mismatches": int(n), "first_time": int(t)}
+           for o, n, t in _MISMATCH_RE.findall(sim_log) + _MISMATCH2_RE.findall(sim_log)]
     tot = _TOTAL_RE.search(sim_log)
     return bad, ((int(tot.group(1)), int(tot.group(2))) if tot else None)
 
@@ -166,6 +170,67 @@ def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int
         diag = "틀린 출력: " + ", ".join(f"{b['output']} ({b['mismatches']}개, 첫 불일치 {b['first_time']}ps)" for b in bad[:8]) + "."
     elif total is None:
         diag = "TB가 결과 요약을 내지 않음 (시뮬레이션이 끝나지 않았거나 중단됨)."
+    trace = ""
+    if not ok:
+        try:
+            trace = trace_mismatch(item, cmd, files, eval_dir, timeout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            trace = ""
+        if trace:
+            (eval_dir / "mismatch_trace.log").write_text(trace + "\n", encoding="utf-8")
+            diag += "\n" + trace
     return {"ok": ok, "kind": "realbench", "stage": "sim", "returncode": sim.returncode, "mismatches": bad, "total": total,
             "deduped_modules": dropped, "diagnosis": diag,
-            "log_tail": "" if ok else (diag + " " + out[-1200:])[:1500]}
+            "log_tail": "" if ok else (diag + " " + out[-1200:])[:1500 + len(trace)]}
+
+
+_SAMPLE_RE = re.compile(r"always\s*@\s*\(([^)]*)\)\s*begin\s*\n\s*stats1\.clocks\s*\+\+")
+
+
+def trace_mismatch(item: BenchItem, cmd: list[str], files: list[str], eval_dir: Path, timeout: int) -> str:
+    """공식 TB 사본에 표본 기록기를 넣어 다시 돌리고, 신호별 첫 불일치와 그 전후의 입력·기대(정답 모델)·실제 값을 요약한다.
+    TB가 비교하는 표본 시점(stats1.clocks를 세는 always 블록)과 같은 에지에서 기록한다. 공식 판정에는 쓰지 않는다."""
+    from experiments.bench.adapters.chipverilog import _decl_ports
+    tb_top = item.eval.extra.get("tb_top", "tb")
+    tb_file = next((Path(f) for f in files if re.search(rf"^\s*module\s+{re.escape(tb_top)}\b", Path(f).read_text(
+        encoding="utf-8", errors="replace"), re.M)), None)
+    if tb_file is None:
+        return ""
+    text = tb_file.read_text(encoding="utf-8", errors="replace")
+    ports = _decl_ports(item.header_sv, item.top) or []
+    has = lambda n: re.search(rf"\b{re.escape(n)}\b", text) is not None
+    outs = [n for n, d, _ in ports if d == "output" and has(f"{n}_ref") and has(f"{n}_dut")]
+    ins = [n for n, d, _ in ports if d == "input" and has(n)]
+    m = _SAMPLE_RE.search(text)
+    event = m.group(1) if m else ("posedge clk" if has("clk") else "")
+    if not outs or not event:
+        return ""
+    clocks = [re.sub(r"\b(?:posedge|negedge)\s+", "", e).strip() for e in event.split(",")]
+    clock = clocks[0]
+    ins = [n for n in ins if n not in clocks]   # 표본 에지의 클럭은 늘 같은 값이라 표에서 뺀다
+    fmt = " ".join(["%0t", *["%b"] * len(ins), "|", *["%b"] * (2 * len(outs))])
+    args = ", ".join(["$time", *ins, *[f"{o}_ref, {o}_dut" for o in outs]])
+    mon = (f"\n    // rtl-factory 불일치 기록기 (공식 판정과 무관)\n    integer rtlf_fd = $fopen(\"trace.txt\", \"w\");\n"
+           f"    always @({event}) $fdisplay(rtlf_fd, \"{fmt}\", {args});\n")
+    start = re.search(rf"^\s*module\s+{re.escape(tb_top)}\b", text, re.M).start()
+    end = text.find("endmodule", start)
+    if end < 0:
+        return ""
+    tdir = eval_dir / "trace"
+    tdir.mkdir(exist_ok=True)
+    (tdir / tb_file.name).write_text(text[:end] + mon + text[end:], encoding="utf-8")
+    tcmd = [c if c != str(tb_file) else str(tdir / tb_file.name) for c in cmd]
+    tcmd[tcmd.index("--Mdir") + 1] = str(tdir / "obj_dir")
+    comp = subprocess.run(tcmd, cwd=tdir, capture_output=True, text=True, timeout=timeout)
+    if comp.returncode != 0 or not (tdir / "obj_dir" / f"V{tb_top}").exists():
+        return ""
+    subprocess.run([str(tdir / "obj_dir" / f"V{tb_top}")], cwd=tdir, capture_output=True, text=True, timeout=timeout)
+    rows = []
+    for i, ln in enumerate((tdir / "trace.txt").read_text(encoding="utf-8", errors="replace").splitlines()):
+        left, _, right = ln.partition("|")
+        lv, rv = left.split(), right.split()
+        if len(lv) != 1 + len(ins) or len(rv) != 2 * len(outs):
+            continue
+        rows.append({"cyc": i, "time": lv[0], "ins": dict(zip(ins, lv[1:])),
+                     "exp": {o: rv[2 * k] for k, o in enumerate(outs)}, "act": {o: rv[2 * k + 1] for k, o in enumerate(outs)}})
+    return mismatch_trace.summarize(rows, clock, "공식 TB 자극, 기대 = TB의 정답 모델 출력")

@@ -24,6 +24,13 @@ GUIDE = ROOT / "pipeline" / "agents" / "prompts" / "ir_guide.md"
 EXAMPLE_TOP = ROOT / "tests" / "fixtures" / "pkt_rx_top.ir.json"
 EXAMPLE_MOD = ROOT / "tests" / "fixtures" / "pkt_parser.ir.json"
 
+CELLS_NOTE = """
+## 제공 셀 (cells/)
+- `cells/` 디렉토리에 외부 하위 모듈의 실제 Verilog/SystemVerilog 파일이 제공된다.
+- 하위 모듈 중 제공 셀과 이름이 같은 모듈은 해당 파일의 포트 이름, 방향, 비트 폭, 클럭/리셋 신호명을 **정확히 그대로** L1(`out/ir/<모듈>.ir.json`)에 선언하고 Block Top에서 인스턴스/연결해야 한다.
+- 제공 셀의 포트 목록에 없는 가상의 신호(예: 실제 셀은 wclk/rclk인데 단일 clk를 연결하거나, 없는 리셋/플래그 신호 추가)를 선언하거나 연결하면 검사에서 즉시 거부된다.
+"""
+
 TASK = """\
 # 과제: {top} Block Top의 모듈 트리와 인터페이스 정하기
 
@@ -102,10 +109,71 @@ REVISE = """
 """
 
 
+def cell_port_names(cell: Path) -> dict[str, list[str]]:
+    """셀 파일 안의 모듈별 포트 이름 목록 (선언 순서). ANSI와 non-ANSI를 모두 읽는다."""
+    text = Path(cell).read_text(encoding="utf-8", errors="replace")
+    text = re.sub(r"//.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"/\*[\s\S]*?\*/", "", text)
+    out: dict[str, list[str]] = {}
+    mod_re = re.compile(r"\bmodule\s+([A-Za-z_]\w*)([\s\S]*?)\bendmodule\b")
+    decl_re = re.compile(
+        r"\b(?P<dir>input|output|inout)\b"
+        r"(?:\s+(?:wire|reg|logic|signed|unsigned|\w+_t))*"
+        r"(?:\s*\[[^\]]+\])*"
+        r"(?P<rest>[\s\S]*?)(?=(?:\b(?:input|output|inout)\b|;|\)\s*;|\Z))"
+    )
+    for m in mod_re.finditer(text):
+        mname = m.group(1)
+        body = m.group(2)
+        ports: list[str] = []
+        for dmatch in decl_re.finditer(body):
+            rest = dmatch.group("rest")
+            rest = re.sub(r"=[^,]+", "", rest)
+            rest = re.sub(r"\[[^\]]+\]", "", rest)
+            for tok in rest.split(","):
+                tok = tok.strip()
+                m_ident = re.search(r"\b([A-Za-z_]\w*)\b", tok)
+                if m_ident:
+                    name = m_ident.group(1)
+                    if name not in ("input", "output", "inout", "wire", "reg", "logic", "signed", "unsigned"):
+                        if name not in ports:
+                            ports.append(name)
+        out[mname] = ports
+    return out
+
+
+def cell_port_errors(children: dict[str, dict], cells: list[Path] | None) -> list[str]:
+    """제공 셀과 같은 이름의 하위 모듈이 셀에 없는 포트/도메인 신호를 쓰면 알린다."""
+    if not cells:
+        return []
+    cell_ports: dict[str, list[str]] = {}
+    for c in cells:
+        if Path(c).is_file():
+            cell_ports.update(cell_port_names(Path(c)))
+    errs = []
+    for n, c in children.items():
+        if n not in cell_ports:
+            continue
+        valid = set(cell_ports[n])
+        used = set()
+        for d in c.get("domains", []):
+            for k in ("clock", "reset"):
+                if d.get(k):
+                    used.add(d[k])
+        for b in c.get("ports", []):
+            for sig in b.get("signals", [b]):
+                if sig.get("name"):
+                    used.add(sig["name"])
+        bad = sorted(used - valid)
+        if bad:
+            errs.append(f"[제공 셀] {n}: 실제 셀 파일에 없는 포트 {bad}를 씀. 실제 포트: {cell_ports[n]}")
+    return errs
+
+
 def make_revise_task(name: str, block_top_l1: dict, spec: str | Path, tree: dict, conflicts: list[dict],
-                     max_modules: int | None = None) -> Task:
+                     max_modules: int | None = None, cells: list[Path] | None = None) -> Task:
     """lead의 근본 원인 수정 요청: 지금 트리(tree: {"top", "children", "contracts"})와 충돌 경위를 받아 모듈 트리를 다시 정한다."""
-    t = make_task(name, block_top_l1, spec, max_modules)
+    t = make_task(name, block_top_l1, spec, max_modules, cells=cells)
     t.inputs["current/contracts.json"] = json.dumps({"contracts": tree.get("contracts", [])}, ensure_ascii=False, indent=1)
     t.inputs[f"current/{tree['top']['module']}.ir.json"] = json.dumps(tree["top"], ensure_ascii=False, indent=1)
     for n, ir in tree["children"].items():
@@ -115,12 +183,19 @@ def make_revise_task(name: str, block_top_l1: dict, spec: str | Path, tree: dict
     return t
 
 
-def make_task(name: str, block_top_l1: dict, spec: str | Path, max_modules: int | None = None) -> Task:
-    """max_modules: 하위 모듈 수 상한 (P11 R6 재생성에서 원본 모듈 수로 정함). None이면 제한 없음."""
+def make_task(name: str, block_top_l1: dict, spec: str | Path, max_modules: int | None = None,
+              cells: list[Path] | None = None) -> Task:
+    """max_modules: 하위 모듈 수 상한 (P11 R6 재생성에서 원본 모듈 수로 정함). None이면 제한 없음. cells: 제공 셀 파일 목록."""
     inputs = {"spec.md": Path(spec), "spec_guide.md": SPEC_GUIDE, "block_top.json": json.dumps(block_top_l1, ensure_ascii=False, indent=1),
               "guide.md": GUIDE, "examples/pkt_rx_top.ir.json": EXAMPLE_TOP, "examples/pkt_parser.ir.json": EXAMPLE_MOD}
+    if cells:
+        for c in cells:
+            p = Path(c)
+            if p.is_file():
+                inputs[f"cells/{p.name}"] = p.resolve()
     top = block_top_l1["module"]
-    text = TASK.format(top=top, limit=LIMIT.format(n=max_modules) if max_modules else "")
+    cells_note = CELLS_NOTE if cells else ""
+    text = TASK.format(top=top, limit=LIMIT.format(n=max_modules) if max_modules else "") + cells_note
     return Task("architect", name, text, inputs=inputs,
                 outputs=[f"out/ir/{top}.ir.json", "out/assumptions.json"], write_scope=["out/"])
 
@@ -268,7 +343,8 @@ def stage_budget_errors(top_ir: dict, work: Path, latency: int | None) -> list[s
     return errs
 
 
-def check(block_top_l1: dict, max_modules: int | None = None, latency: int | None = None):
+def check(block_top_l1: dict, max_modules: int | None = None, latency: int | None = None,
+          cells: list[Path] | None = None):
     top = block_top_l1["module"]
 
     def _check(work: Path) -> list[str]:
@@ -306,5 +382,8 @@ def check(block_top_l1: dict, max_modules: int | None = None, latency: int | Non
                 errs.append("가정에 text가 없음")
             if a.get("affects") is not None and (not isinstance(a["affects"], list) or set(a["affects"]) - AFFECTS):
                 errs.append(f'가정의 affects는 {sorted(AFFECTS)} 중에서 고른 목록: {a.get("affects")!r}')
+
+        # 제공 셀 포트 정합성 검사
+        errs += cell_port_errors(children, cells)
         return errs
     return _check

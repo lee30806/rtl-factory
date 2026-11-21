@@ -491,17 +491,17 @@ def test_ext_fix_trigger():
     assert ext_fix_trigger(item, _scored("pass", False, [False, False])) is None
 
 
-def test_ext_fix_trigger_chipverilog_needs_self_checking_tb(tmp_path: Path):
-    """ChipVerilog도 자체 검사 TB가 있으면 외부 TB 보정을 하고, 등가로만 채점하는 문제(정답을 볼 수 없음)는 하지 않는다."""
+def test_ext_fix_trigger_chipverilog_tb_or_counterexample(tmp_path: Path):
+    """ChipVerilog는 자체 검사 TB가 있든, 등가로만 채점하든(반례 counterexample.log가 근거) 외부 보정을 한다. 정답이 없으면 하지 않는다."""
     from experiments.bench.common.runner import ext_fix_trigger, has_external_tb, repair_trigger, _grading_defects
     des = tmp_path / "des"
     des.mkdir()
     (des / "x.v").write_text("module x; endmodule\n", encoding="utf-8")
     item = BenchItem("chipverilog", "x", "standalone", "x", "", "", reference_rtl=[str(des / "x.v")], eval=EvalSpec(kind="chipverilog"))
     sc = _scored("failed", False, [False, False])
-    assert not has_external_tb(item) and ext_fix_trigger(item, sc) is None
-    (des / "x_TB.v").write_text('module tb; initial $display("value %h", 1); endmodule\n', encoding="utf-8")
-    assert not has_external_tb(item)                                    # 출력만 하는 TB: 공식 채점이 판정에 쓰지 않음
+    assert has_external_tb(item) and ext_fix_trigger(item, sc) == "external_fail"   # 등가만: 반례가 근거
+    no_ref = BenchItem("chipverilog", "y", "standalone", "y", "", "", eval=EvalSpec(kind="chipverilog"))
+    assert not has_external_tb(no_ref) and ext_fix_trigger(no_ref, sc) is None
     (des / "x_TB.v").write_text('module tb; initial $display("Error! out is incorrect"); endmodule\n', encoding="utf-8")
     assert has_external_tb(item) and ext_fix_trigger(item, sc) == "external_fail"
     sc["rep"]["review"] = [{"code": "UNDEFINED", "message": "EXC-03 미정의: 특수값"}]

@@ -254,11 +254,12 @@ def external_tb_files(item: BenchItem) -> dict[str, str]:
 
 
 def has_external_tb(item: BenchItem) -> bool:
-    """외부 TB를 근거로 Repair·SPEC 보정을 할 수 있는 문제: RTLLM(iverilog TB), RealBench(Verilator TB), CVDP(cocotb 테스트),
-    ChipVerilog 가운데 자체 검사 TB가 있는 문제. TB 없이 정답과의 등가로만 채점하는 문제는 정답을 볼 수 없으므로 근거가 없다."""
+    """외부 채점 결과를 근거로 Repair·SPEC 보정을 할 수 있는 문제: RTLLM(iverilog TB), RealBench(Verilator TB), CVDP(cocotb 테스트),
+    ChipVerilog(자체 검사 TB, 또는 등가로만 채점하는 문제는 정답과 같은 무작위 입력으로 돌린 반례 `counterexample.log`).
+    정답 코드는 어느 경우에도 주지 않는다."""
     if item.eval.kind in ("iverilog", "realbench", "cvdp"):
         return True
-    return item.eval.kind == "chipverilog" and bool(ext_fix.chipverilog_tb_files(item))
+    return item.eval.kind == "chipverilog" and bool(item.reference_rtl)
 
 
 def evaluate_rtl(item: BenchItem, sv_files: list[Path], eval_dir: Path) -> dict[str, Any]:
@@ -871,7 +872,8 @@ def _ext_fix_spec(item: BenchItem, rdir: Path, trigger: str, spec_path: Path, ou
         if not c["bench_eval"].get("stage"):
             continue
         # 로그: RTLLM은 eval/<c>/tb/ 바로 아래, ChipVerilog 공식 도구는 result_root/rtlf/<모듈>/<모듈>_t1/ 아래
-        logs = [f for name in ("compile.log", "sim.log") for f in sorted((eval_root / ck / "tb").rglob(name))][:4]
+        logs = [f for name in ("compile.log", "sim.log", "mismatch_trace.log", "counterexample.log")
+                for f in sorted((eval_root / ck / "tb").rglob(name)) if "trace" not in f.parent.name][:6]
         cands[ck] = {"rtl": sorted((eval_root / ck / "rtl").glob("*.sv")),
                      "result": {"pipeline_ok": c["pipeline_ok"], **c["bench_eval"]}, "logs": logs}
     rep = scored["rep"]

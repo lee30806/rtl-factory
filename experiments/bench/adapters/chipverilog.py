@@ -274,13 +274,100 @@ def evaluate(item: BenchItem, sv_files: list[Path], eval_dir: Path, timeout: int
     if not ok and (sl := adir / "sim.log").exists():
         tbs = sorted(p for p in des.glob("*.v") if re.search(r"tb|test", p.name, re.I))
         diag = diagnose_sim(sl.read_text(errors="replace"), tbs[0].read_text(errors="replace") if tbs else "")
+    # 등가로만 채점하는 문제는 TB가 없어 Repair·외부 수정이 볼 근거가 없다. 정답과 후보를 같은 무작위 입력으로 돌려 첫 불일치를 반례로 준다
+    if not ok and r.get("flow") == "equivalence" and r.get("status") == "function_fail" and not stubs:
+        try:
+            cex = counterexample(item, text, eval_dir / "cex")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            cex = ""
+        if cex:
+            (eval_dir / "counterexample.log").write_text(cex + "\n", encoding="utf-8")
+            diag = (diag + "\n" if diag else "") + cex
     return {"ok": ok, "kind": "chipverilog", "status": r.get("status"), "flow": r.get("flow"), "proof_type": r.get("proof_type"),
             "stage": stage, "unproven_outputs": unproven, "deduped_modules": dropped, "diagnosis": diag, "stub_modules": stubs,
             "grader_defect": grader_defect(r),
             "log_tail": "" if ok else (f'{r.get("status")}: ' + (diag + " " if diag else "")
                                        + (f"정답의 하위 모듈 {stubs}이(가) 데이터셋에 없어 공식 도구의 스텁으로 채점됨 (채점 결함). " if stubs else "")
                                        + (f"정답과 등가가 증명되지 않은 출력 {unproven[:20]} (사이클 단위 비교). " if unproven else "")
-                                       + f'{r.get("reason", "")} {r.get("counterexample_summary", "")}')[:1500]}
+                                       + f'{r.get("reason", "")} {r.get("counterexample_summary", "")}')[:1500 + len(diag)]}
+
+
+CEX_CYCLES = 300
+CEX_SEEDS = ((1, 0.0), (2, 0.04), (3, 0.04))   # (난수 씨앗, 리셋을 다시 거는 확률). 처음 2사이클은 늘 리셋
+
+
+def _width(w: str) -> int:
+    m = re.fullmatch(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]", w.strip()) if w else None
+    return abs(int(m.group(1)) - int(m.group(2))) + 1 if m else (1 if not w.strip() else 64)
+
+
+def counterexample(item: BenchItem, cand_text: str, work: Path) -> str:
+    """정답 RTL과 후보를 같은 무작위 입력(처음 리셋, 이후 가끔 리셋)으로 따로 시뮬레이션해 사이클마다 출력을 비교한다.
+    첫 불일치와 그 전후 입력·기대·실제 값을 요약한다 (정답 코드는 주지 않는다). 공식 판정(유한 깊이 등가)과 같은 사이클 단위 비교다."""
+    import random
+    import shutil
+    from experiments.bench.common import mismatch_trace
+    from experiments.bench.common.to_spec import port_reset_traits
+    if not shutil.which("iverilog"):
+        return ""
+    ports = _decl_ports(item.header_sv, item.top) or []
+    ins = [(n, _width(w)) for n, d, w in ports if d == "input"]
+    outs = [(n, _width(w)) for n, d, w in ports if d == "output"]
+    if not outs:
+        return ""
+    clocks = [n for n, w in ins if w == 1 and re.search(r"(?:^|_)(?:clk|clock)(?:_|$)|^clk|clk$", n, re.I)]
+    resets = {}
+    for n, w in ins:
+        if w == 1 and n not in clocks and re.search(r"rst|reset", n, re.I):
+            active, _ = port_reset_traits(item.prompt_text, n)
+            resets[n] = active or ("low" if re.search(r"(?:_n|n)$|^n[A-Z_]", n) else "high")
+    data = [(n, w) for n, w in ins if n not in clocks and n not in resets]
+    des = Path(item.reference_rtl[0]).parent
+    incs = [f"-I{d}" for d in [*item.incdirs, str(des), str(des.parent)]]
+    work = Path(work)
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "cand.v").write_text(cand_text, encoding="utf-8")
+    best: tuple[int, str] | None = None
+    for seed, p_rst in CEX_SEEDS:
+        rnd = random.Random(seed)
+        stim = []
+        for c in range(CEX_CYCLES):
+            v = {n: format(rnd.getrandbits(w), f"0{w}b") for n, w in data}
+            for n, a in resets.items():
+                on = c < 2 or rnd.random() < p_rst
+                v[n] = "1" if on == (a == "high") else "0"
+            stim.append(v)
+        decl = "".join(f"  reg {f'[{w - 1}:0] ' if w > 1 else ''}{n};\n" for n, w in ins) \
+            + "".join(f"  wire {f'[{w - 1}:0] ' if w > 1 else ''}{n};\n" for n, w in outs)
+        conn = ", ".join(f".{n}({n})" for n, _, _ in ports if any(n == x for x, _ in ins + outs))
+        body = "".join("    " + " ".join(f"{n} = {len(b)}'b{b};" for n, b in v.items())
+                       + f" #3 $fdisplay(fd, \"{' '.join(['%b'] * len(outs))}\", {', '.join(n for n, _ in outs)}); #7;\n" for v in stim)
+        tb = ("`timescale 1ns/1ps\nmodule rtlf_cex_tb;\n" + decl + f"  {item.top} dut({conn});\n  integer fd;\n"
+              + "".join(f"  initial {c} = 1'b0;\n  always #5 {c} = ~{c};\n" for c in clocks)
+              + "  initial begin\n    fd = $fopen(\"out.txt\", \"w\");\n    #1;\n" + body + "    $fclose(fd);\n    $finish;\n  end\nendmodule\n")
+        (work / "tb.v").write_text(tb, encoding="utf-8")
+        res = {}
+        for side, src in (("ref", item.reference_rtl[0]), ("cand", str(work / "cand.v"))):
+            d = work / f"s{seed}_{side}"
+            d.mkdir(exist_ok=True)
+            comp = subprocess.run(["iverilog", "-g2012", *incs, "-o", str(d / "sim"), "-s", "rtlf_cex_tb", str(work / "tb.v"), src],
+                                  capture_output=True, text=True, timeout=300)
+            if comp.returncode != 0:
+                return ""
+            subprocess.run(["vvp", "-n", str(d / "sim")], cwd=d, capture_output=True, text=True, timeout=300)
+            res[side] = (d / "out.txt").read_text(encoding="utf-8", errors="replace").split("\n") if (d / "out.txt").exists() else []
+        rows = []
+        for c, (le, la) in enumerate(zip(res["ref"], res["cand"])):
+            e, a = le.split(), la.split()
+            if len(e) != len(outs) or len(a) != len(outs):
+                break
+            rows.append({"cyc": c, "time": None, "ins": {n: stim[c][n] for n in [*resets, *(x for x, _ in data)]},
+                         "exp": {n: e[k] for k, (n, _) in enumerate(outs)}, "act": {n: a[k] for k, (n, _) in enumerate(outs)}})
+        first = next((i for i, r in enumerate(rows) if any(mismatch_trace.differs(r["exp"][o], r["act"][o]) for o in r["exp"])), None)
+        if first is not None and (best is None or first < best[0]):
+            src = f"정답과 후보에 같은 무작위 입력, 씨앗 {seed}, 처음 2사이클 리셋" + (f", 이후 사이클마다 {p_rst:.0%} 확률로 리셋" if p_rst else "")
+            best = (first, mismatch_trace.summarize(rows, clocks[0] if clocks else "clk", src))
+    return best[1] if best else ""
 
 
 def official_verdict(rec: dict, rtl_code: str, work_dir: Path) -> dict[str, Any]:

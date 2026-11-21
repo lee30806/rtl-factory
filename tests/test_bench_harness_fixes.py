@@ -310,8 +310,11 @@ def test_prompt_doc_structure_reset_extraction_and_domain_refine(tmp_path: Path)
     tl = "rst_n: Reset signal (active low).\nThe counter is decremented by 1 on every positive edge of the clock or negative edge of the reset signal."
     assert infer_reset_and_clock_traits(tl, "clk", "rst_n", lessons=lessons) == ("pos", "low", True)
     assert infer_reset_and_clock_traits("The active low reset signal rst_n asynchronously initializes the counter.", "clk", "rst_n") == ("pos", "low", True)
-    assert infer_reset_and_clock_traits("On the rising edge of the clock (clk), if the reset (rst) is high, clear.", "clk", "rst", lessons=lessons) == ("pos", "high", False)
     assert lessons == []
+    # 동작 서술("클럭 에지에서 rst가 high이면")은 동기 명시가 아니다: 비동기 기본값 + LESSON (ChipVerilog register_file 정답은 비동기)
+    assert infer_reset_and_clock_traits("On the rising edge of the clock (clk), if the reset (rst) is high, clear.", "clk", "rst", lessons=lessons) == ("pos", "high", True)
+    assert len(lessons) == 1 and "기본값" in lessons[0]
+    lessons.clear()
 
     # 4) 완성된 RTL 코드가 있는 경우(조합 assign 포함) 더미 순차 블록을 주입하지 않고 코드 구조 그대로 반환
     from experiments.bench.common.to_spec import _inject_dummy_seq_if_empty
@@ -448,3 +451,58 @@ def test_realbench_cell_module_deduplication(tmp_path: Path):
     assert deduped == [f1, f3]
     assert seen_mods == {"shared_fifo", "unique_cell"}
 
+
+
+def test_architect_gate_rejects_cell_port_names_not_in_cell(tmp_path: Path):
+    """제공 셀과 이름이 같은 하위 모듈 L1이 셀에 없는 포트(도메인 클럭 포함)를 쓰면 Architect 게이트가 실제 포트를 알려 준다
+    (RealBench sd_fifo_tx_filler: 셀 sd_tx_fifo의 wclk/rclk를 clk/sd_clk로 적어 컴파일 실패)."""
+    from pipeline.agents.architect import cell_port_errors, cell_port_names
+    cell = tmp_path / "sd_tx_fifo.v"
+    cell.write_text("module sd_tx_fifo(input [31:0] d, input wr, input wclk, output full, input rclk, input rst);\nendmodule\n"
+                    "module old_style(a, b);\n input a; output b;\nendmodule\n", encoding="utf-8")
+    assert cell_port_names(cell) == {"sd_tx_fifo": ["d", "wr", "wclk", "full", "rclk", "rst"], "old_style": ["a", "b"]}
+    ir = {"module": "sd_tx_fifo", "params": [], "role": "module",
+          "domains": [{"name": "w", "clock": "clk"}, {"name": "r", "clock": "sd_clk"}],
+          "ports": [{"name": "d", "dir": "input", "type": "logic [31:0]", "domain": "w"},
+                    {"name": "full", "dir": "output", "type": "logic", "domain": "w"}]}
+    errs = cell_port_errors({"sd_tx_fifo": ir}, [cell])
+    assert len(errs) == 1 and "['clk', 'sd_clk']" in errs[0] and "wclk" in errs[0]
+    ir["domains"] = [{"name": "w", "clock": "wclk"}, {"name": "r", "clock": "rclk"}]
+    assert cell_port_errors({"sd_tx_fifo": ir}, [cell]) == []
+    assert cell_port_errors({"other": ir}, [cell]) == []
+
+
+def test_mismatch_trace_summary_and_realbench_hint_formats():
+    """신호별 첫 불일치와 전후 창. 기대값의 x 비트는 비교하지 않는다. RealBench TB의 두 가지 불일치 문구를 모두 읽는다."""
+    from experiments.bench.adapters.realbench import diagnose
+    from experiments.bench.common import mismatch_trace as mt
+    rows = [{"cyc": i, "time": str(10 * i + 5), "ins": {"en": "1", "ack": "1" if i == 3 else "0"},
+             "exp": {"cyc_o": "0" if i >= 4 else "1", "dat": "x" * 4},
+             "act": {"cyc_o": "1", "dat": "0101"}} for i in range(8)]
+    text = mt.summarize(rows, "clk", "공식 TB")
+    assert "- cyc_o: 사이클 4 (시각 45), 기대 0 실제 1, 불일치 표본 4개" in text and "dat" not in text.split("\n")[1]
+    assert "\ncyc | ack en | cyc_o\n" in text and "\n4 | 0 1 | 0/1*" in text and "\n3 | 1 1 | 1/1" in text
+    assert mt.summarize(rows[:4], "clk") == ""
+    log = ("Hint: Output 'a' has 3 mismatches. First mismatch occurred at time 25.\n"
+           "Hint: Output m_wb_cyc_o: 473 errors, first at time 265\nHint: Output `'signal`' has no mismatches.\n"
+           "Hint: Total mismatched samples is 476 out of 900 samples\n")
+    bad, total = diagnose(log)
+    assert [(b["output"], b["mismatches"], b["first_time"]) for b in bad] == [("a", 3, 25), ("m_wb_cyc_o", 473, 265)]
+    assert total == (476, 900)
+
+
+@pytest.mark.skipif(not __import__("shutil").which("iverilog"), reason="iverilog 없음")
+def test_equivalence_counterexample_shows_async_reset_difference(tmp_path: Path):
+    """등가로만 채점하는 문제의 반례: 정답(비동기 리셋)과 후보(동기 리셋)를 같은 입력으로 돌려 첫 불일치를 찾는다 (register_file)."""
+    from experiments.bench.common.schema import BenchItem, EvalSpec
+    ref = tmp_path / "des" / "r.v"
+    ref.parent.mkdir()
+    ref.write_text("module r(input clk, input rst, input [3:0] d, output reg [3:0] q);\n"
+                   "always @(posedge clk or posedge rst) if (rst) q <= 0; else q <= d;\nendmodule\n", encoding="utf-8")
+    header = "module r(input clk, input rst, input [3:0] d, output [3:0] q);\nendmodule\n"
+    item = BenchItem("chipverilog", "r", "standalone", "r", "rst is an active-high reset.", header,
+                     reference_rtl=[str(ref)], eval=EvalSpec(kind="chipverilog"))
+    cand = "module r(input clk, input rst, input [3:0] d, output reg [3:0] q);\nalways @(posedge clk) if (rst) q <= 0; else q <= d;\nendmodule\n"
+    text = cv.counterexample(item, cand, tmp_path / "cex")
+    assert "- q: 사이클 0" in text and "기대 0 실제 x" in text
+    assert cv.counterexample(item, ref.read_text(), tmp_path / "cex2") == ""
