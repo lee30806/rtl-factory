@@ -506,3 +506,20 @@ def test_equivalence_counterexample_shows_async_reset_difference(tmp_path: Path)
     text = cv.counterexample(item, cand, tmp_path / "cex")
     assert "- q: 사이클 0" in text and "기대 0 실제 x" in text
     assert cv.counterexample(item, ref.read_text(), tmp_path / "cex2") == ""
+
+
+def test_edge_detection_hint_and_micro_timing_rules():
+    """에지 검출 또는 펄스 관련 프롬프트에서 표준 동기 1사이클 등록 펄스 힌트가 생성되는지 검증한다."""
+    if (ROOT / "experiments").exists():
+        from experiments.bench.common.to_spec import edge_detection_hint
+    else:
+        from src.rtl_factory.bench.common.to_spec import edge_detection_hint
+
+    hint = edge_detection_hint("Design a synchronous edge detector that detects positive and negative edges on an input signal. Assert for one clock cycle.")
+    assert hint is not None
+    assert "에지 검출 타이밍" in hint
+    assert "1사이클 동기 등록 펄스" in hint
+    assert "불필요한 2단 쉬프트 지연" in hint
+
+    # 일반 모듈은 힌트가 없음
+    assert edge_detection_hint("Design a 32-bit ALU.") is None

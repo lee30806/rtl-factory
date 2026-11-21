@@ -84,6 +84,24 @@
 - 비동기 입력(포트 `domain`이 null)은 `cdc_sync`의 `src`로만 읽는다.
 - `cdc_sync`의 `dst`는 받는 쪽 도메인이 리셋 중이거나 막 풀렸을 때 0이고, 보내는 쪽 값은 2클럭 넘게 늦게 보인다. 그래서 도메인을 넘는 상태 플래그는 0이 안전한 뜻으로 정한다. 예: "상대가 리셋 중"(1이면 멈춤) 대신 "상대가 준비됨"(1이면 진행)으로 보내야, 아직 동기화되지 않은 0이 "멈춤"으로 읽힌다 (P8a async_fifo: 리셋 중 플래그의 초기 0을 "상대가 깨어남"으로 읽어 첫 비트를 받은 뒤 프레임을 버림).
 
+## 미세 타이밍 패턴 (에지 검출, 펄스, 레이턴시)
+
+- **동기 에지 검출 (1사이클 등록 펄스)**:
+  - SystemVerilog (`seq` 블록):
+    ```systemverilog
+    r_in_prev <= i_signal;
+    o_pos_edge <= i_signal && !r_in_prev;
+    o_neg_edge <= !i_signal && r_in_prev;
+    ```
+  - Python 조각 (`lang: py`, `seq` 블록):
+    ```python
+    r_in_prev = i_signal
+    o_pos_edge = i_signal and not r_in_prev
+    o_neg_edge = not i_signal and r_in_prev
+    ```
+  - 입력 천이가 처음 샘플링되는 클럭 상승 에지에서 `o_pos_edge`가 1로 등록되어 다음 클럭 에지까지 정확히 1사이클 동안 유지된다.
+  - CDC 동기화(`2ff`)가 요구되는 비동기 입력이 아닌 한, 단일 클럭 도메인 내부 신호에 불필요한 2단 쉬프트 레지스터(`d1 <= in; d2 <= d1;`)를 추가하여 출력을 1사이클 늦게(Late) 만들지 않는다.
+
 ## Python 조각 (`"lang": "py"`)
 
 body와 cond를 Python 문법으로 쓴다. 실행되는 Python이 아니라 사이클 단위 기술이고, 툴이 SV로 옮긴다. 구조(signals, blocks의 종류, 도메인, 리셋값)는 SV 조각과 같다.

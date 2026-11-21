@@ -255,6 +255,11 @@ BENCH_SPEC_TASK = """\
     말하면 "구현에 따름"으로 두지 않는다. 지연 수가 적혀 있으면 그 값을, 없으면 단 번호가 붙은 레지스터 나열(`<이름>_1` ~ `<이름>_N`)이나
     "N단 파이프라인"에서 가장 큰 단 번호를 지연 사이클 수로 쓴다 (`notes.json`의 `stage_depth_hint`가 이 값이다). 구조에서 읽어낸 값은
     추정이므로 10절에 `- Q-xx [LESSON] ...`으로 근거와 함께 남긴다.
+  - **미세 타이밍 및 에지 검출/펄스 출력 규격 (필수):** 원문이 에지 검출(edge detector) 또는 특정 조건에서 "1 클럭 사이클 동안 펄스 출력(asserted for one clock cycle)"을 요구하고 명시적인 다단 CDC 동기화기(예: 2FF)를 요구하지 않는 단일 클럭 도메인 설계인 경우:
+    - 표준 동작은 **1사이클 동기 등록 펄스(1-cycle registered pulse)**이다: 입력 신호의 천이를 샘플링한 클럭 에지(Tn)에서 출력 펄스가 1로 어서트되어 다음 클럭 에지(Tn+1)까지 정확히 1클럭 사이클 동안 유지된다.
+    - 5절과 6절에 이를 명시할 때 **"천이가 감지/샘플링되는 클럭 에지 Tn에서 출력이 1로 등록되어 Tn+1까지 1클럭 사이클 동안 유지된다 (추가 2단 쉬프트 지연 없음)"**와 같이 클럭 에지 시점을 명확히 못 박는다.
+    - "샘플링된 다음 사이클"과 같은 모호한 표현을 단독으로 쓰지 않는다 (구현자가 2단 쉬프트 레지스터 Tn+1 이후로 지연을 오인하는 원인이 됨).
+    - 동기 클럭 도메인에서 펄스 출력을 레지스터 없이 입력 직결 조합 논리(`comb`, `in && !r_prev`)로 구동하도록 명세하지 않는다 (입력 신호 변화 즉시 비동기적으로 튀어 클럭 에지 전에 사라지는 글리치 및 타이밍 불일치 방지).
 - 7절 (`## 7. 예외와 코너 케이스`): `- EXC-01 (필수) ...` 형식으로 리셋 인가 시 모든 출력 포트의 초기값과 경계 조건 동작을 한 줄에 한 문장씩 명시한다.
   - 아래 시뮬레이션 모델이 아닐 때, `tables.md` 2절에서 리셋 포트가 `없음`인 도메인의 출력에는 초기값(시뮬레이션 시작 값)을 쓰지 않는다. `prompt.txt`가 initial 문이나
     초기값을 말해도 그렇다: 파이프라인은 initial 문을 쓸 수 없어 보장할 수 없다. 첫 값이 정해지기 전의 출력은 `- EXC-02 미정의: ...` 형식으로 쓴다
@@ -687,6 +692,18 @@ def prompt_stage_depth(prompt_text: str) -> tuple[int | None, str | None]:
     return (best, why) if best else (None, None)
 
 
+_EDGE_DETECT_RE = re.compile(r"\b(edge[- ]detect\w*|positive\s*edge|negative\s*edge|천이\s*감지|에지\s*검출)\b", re.I)
+
+
+def edge_detection_hint(prompt_text: str) -> str | None:
+    """에지 검출 또는 1사이클 펄스 출력을 요구하는 모듈인 경우 표준 동기 1사이클 등록 펄스 타이밍 힌트를 제공한다."""
+    if _EDGE_DETECT_RE.search(prompt_text):
+        return ("에지 검출 타이밍: prompt.txt가 에지 검출 또는 1사이클 펄스 출력을 요구하므로, "
+                "표준 1사이클 동기 등록 펄스(천이를 샘플링한 클럭 에지 Tn에서 출력이 1로 등록되어 Tn+1까지 1사이클 유지)로 "
+                "5·6절을 명세하고 불필요한 2단 쉬프트 지연(Tn+1 시작)이나 입력 직결 조합 출력을 두지 않는다.")
+    return None
+
+
 _UPPER_ID_RE = re.compile(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b")
 
 
@@ -1027,6 +1044,9 @@ def extract_header_l1(item: BenchItem, work_dir: Path) -> tuple[dict, str, dict]
     if depth:
         lessons.append(f"지연 추정: prompt.txt에 지연 수가 없어 {depth_why}로 파이프라인 깊이를 최소 {depth}단으로 보았다. "
                        f"6절 지연은 이 값을 기준으로 쓰되 사용자가 확인해야 한다.")
+    edge_hint = edge_detection_hint(item.prompt_text)
+    if edge_hint:
+        lessons.append(edge_hint)
     cfg_macros = config_macros(item.prompt_text, incdirs, item.defines, raw_text)
     if cfg_macros["undefined"]:
         lessons.append(f"구성 매크로: prompt.txt가 말하는 {', '.join(cfg_macros['undefined'])}은(는) 제공 include에 정의되어 있지 않다"
