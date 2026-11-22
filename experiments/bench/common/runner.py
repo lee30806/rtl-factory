@@ -888,7 +888,7 @@ def _ext_fix_spec(item: BenchItem, rdir: Path, trigger: str, spec_path: Path, ou
         if not c["bench_eval"].get("stage"):
             continue
         # 로그: RTLLM은 eval/<c>/tb/ 바로 아래, ChipVerilog 공식 도구는 result_root/rtlf/<모듈>/<모듈>_t1/ 아래
-        logs = [f for name in ("compile.log", "sim.log", "mismatch_trace.log", "counterexample.log")
+        logs = [f for name in ("compile.log", "sim.log", "mismatch_trace.log", "counterexample.log", "equivalence.log")
                 for f in sorted((eval_root / ck / "tb").rglob(name)) if "trace" not in f.parent.name][:6]
         cands[ck] = {"rtl": sorted((eval_root / ck / "rtl").glob("*.sv")),
                      "result": {"pipeline_ok": c["pipeline_ok"], **c["bench_eval"]}, "logs": logs}
