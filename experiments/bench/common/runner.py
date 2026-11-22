@@ -78,6 +78,16 @@ def auto_decide(
         pid = p["id"]
         kind = p["kind"]
         if kind == "expectation_change":
+            if p.get("verifier") == "ext":
+                decs = approve.decide(
+                    run_dir,
+                    [pid],
+                    "rejected",
+                    by=by,
+                    note="외부 TB 우선 원칙: 외부 TB 기댓값 수정 거절 → Repair가 외부 TB 기준에 맞게 RTL 수정",
+                )
+                made.extend(decs)
+                continue
             c = int(p.get("c", 0))
             cnt = exp_approvals_per_cand.get(c, 0)
             if cnt < max_auto_approves:

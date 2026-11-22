@@ -243,7 +243,11 @@ class Run:
                 # 외부 TB 기댓값 수정안 (이전 실행이 남긴 것): 공식 TB는 고칠 수 없으므로 거절로 처리한다
                 p["decision"] = {**p["decision"], "decision": "rejected", "note": "공식 외부 TB는 수정할 수 없음"}
             if p["decision"]["decision"] == "approved":
-                approved.setdefault(p["verifier"], []).append(p)
+                v_idx = p["verifier"]
+                if isinstance(v_idx, int) and 0 <= v_idx < len(tbs):
+                    approved.setdefault(v_idx, []).append(p)
+                else:
+                    p["applied"] = True
         for k, items in sorted(approved.items()):
             rev = self.state.get("tb_rev", 0) + 1
             before = Path(tbs[k]).read_text(encoding="utf-8")
