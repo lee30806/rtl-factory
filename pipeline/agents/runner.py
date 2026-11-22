@@ -20,7 +20,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-KICKOFF = "작업 디렉터리의 TASK.md를 읽고 지시대로 수행하라. 끝나면 종료하라."
+KICKOFF = (
+    "작업 디렉터리의 TASK.md를 읽고 지시대로 수행하라. "
+    "웹 검색(WebSearch, search_web) 및 외부 URL 접근(WebFetch)은 엄격히 금지된다. "
+    "작업 디렉터리의 로컬 파일만 참조하여 SPEC-First 원칙에 따라 연역적으로 수행하고, 끝나면 종료하라."
+)
 
 
 @dataclass

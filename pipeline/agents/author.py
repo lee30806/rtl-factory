@@ -28,6 +28,18 @@ TASK = """\
 
 너는 RTL 생성 파이프라인의 Author 에이전트다. 동결된 L1을 받아 이 모듈의 동작(L2, L3)을 IR로 쓴다.
 
+## 핵심 원칙 (SPEC-First & 웹 검색 금지)
+1. **SPEC은 유일한 진실 원천(Single Source of Truth)이다.**
+   - 무엇이 맞는 동작인지는 오직 `spec.md`가 결정한다.
+   - SPEC에 없는 동작을 임의로 지어내지 않는다. 미정의 동작은 부록(원문 명세)을 따르거나 가장 단순한 기본 동작을 선택한다.
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+   - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
+   - 인터넷, GitHub, 외부 오픈소스에서 원본 코드를 검색하여 역공학으로 끼워 맞추는 행위는 엄격히 금지된다.
+   - 모든 설계와 구현은 오직 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `l1.json`, `guide.md` 등)에 기반하여 연역적으로만 수행하라.
+3. **미사용 입력 포트 처리 (L1 동결 보존)**:
+   - SPEC L1에 정의되었으나 기능상 불필요한 미사용 입력 포트가 있더라도 포트를 누락시키지 않는다.
+   - Verilator `UNUSEDSIGNAL` 린트 경고를 방지하기 위해 내부 블록에 `unused_sink = ^unused_port` 또는 더미 연산을 포함하여 L1 인터페이스를 완벽히 유지하라.
+
 ## 입력
 - `l1.json`: 동결된 L1 (module, role, params, domains, ports){children}
 - `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력(계약·제약·근거·참조)이 적혀 있다. `spec.md`보다 먼저 읽는다

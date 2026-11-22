@@ -128,6 +128,22 @@ body와 cond를 Python 문법으로 쓴다. 실행되는 Python이 아니라 사
 - 설계 모델을 RTL 없이 돌려 볼 수 있다: `python3 tools/pl.py pysim <ir.json> --cycles 20` (또는 `--stim stim.json`).
 - 검사 오류의 "Python 조각 N번째 줄"은 그 조각의 N번째 줄이다.
 
+## 미사용 입력 포트 처리 (L1 보존 및 UNUSEDSIGNAL 경고 방지)
+
+SPEC L1에 선언되었으나 내부 기능상 사용되지 않는 입력 포트(예: 원본 칩 레거시 인터페이스, 미사용 프리페치 제어 포트 등)가 있는 경우, Verilator의 `%Warning-UNUSEDSIGNAL` 린트 경고가 발생할 수 있다.
+- **L1 포트 삭제 금지**: 포트를 삭제하면 동결된 L1 인터페이스 검사 및 외부 테스트벤치 연결에서 실패한다. 포트를 임의로 삭제해서는 안 된다.
+- **더미 싱크(Dummy Sink) 신호 활용**:
+  - `signals`에 내부 wire `unused_sink` (logic)를 선언하고, `comb` 블록 내에서 미사용 신호의 비트들을 XOR 감축(`^`)하여 `unused_sink`에 할당한다.
+  - SystemVerilog 조각:
+    ```systemverilog
+    unused_sink = ^unused_input_port;
+    ```
+  - Python 조각 (`lang: py`):
+    ```python
+    unused_sink = parity(unused_input_port)   # 또는 단일 비트인 경우 unused_sink = unused_input_port
+    ```
+  - 이렇게 하면 Verilator 린트 경고가 완전히 해소되면서도 L1 인터페이스를 100% 온전히 보존할 수 있다.
+
 ## 검사
 
 `python3 tools/pl.py validate <ir.json> --l1 l1.json`이 `"ok": true`가 될 때까지 고친다. 이 도구는 스키마, 참조, 표현식(pyslang), 조각의 읽기·쓰기, 구동, 래치와 루프, 리셋, 도메인, FSM, 동결 L1을 본다. 방출될 SystemVerilog는 `python3 tools/pl.py emit <ir.json>`으로 볼 수 있다.

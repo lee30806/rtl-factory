@@ -600,4 +600,39 @@ def test_co_verify_and_external_tb_priority_guidelines():
     assert "co_verify_ext_pass" in scheduler_text
 
 
+def test_no_web_search_and_spec_first_guidelines():
+    """모든 에이전트에 WebSearch/WebFetch 금지 지침과 SPEC-First 원칙이 적용되어 있는지 검증한다."""
+    runner_path = ROOT / "pipeline" / "agents" / "runner.py"
+    if not runner_path.exists():
+        runner_path = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "runner.py"
+    runner_text = runner_path.read_text(encoding="utf-8")
+    assert "웹 검색(WebSearch, search_web) 및 외부 URL 접근(WebFetch)은 엄격히 금지된다" in runner_text
+    assert "SPEC-First 원칙" in runner_text
+
+    claude_json = ROOT / "config" / "agents" / "agents.claude.json"
+    if not claude_json.exists():
+        claude_json = ROOT / "src" / "rtl_factory" / "config" / "agents" / "agents.claude.json"
+    claude_data = json.loads(claude_json.read_text(encoding="utf-8"))
+    for ag in claude_data["agents"]:
+        assert "--disallowed-tools" in ag["command"]
+        idx = ag["command"].index("--disallowed-tools")
+        assert "WebSearch WebFetch" in ag["command"][idx + 1]
+
+    for role_file in ("repair.py", "author.py", "verifier.py", "arbiter.py", "architect.py", "spec_writer.py"):
+        p = ROOT / "pipeline" / "agents" / role_file
+        if not p.exists():
+            p = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / role_file
+        txt = p.read_text(encoding="utf-8")
+        assert "NO WebSearch / NO WebFetch" in txt or "웹 검색 및 외부 역공학 절대 금지" in txt
+        assert "SPEC-First" in txt
+
+    guide_path = ROOT / "pipeline" / "agents" / "prompts" / "ir_guide.md"
+    if not guide_path.exists():
+        guide_path = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "prompts" / "ir_guide.md"
+    guide_text = guide_path.read_text(encoding="utf-8")
+    assert "미사용 입력 포트 처리 (L1 보존 및 UNUSEDSIGNAL 경고 방지)" in guide_text
+    assert "unused_sink" in guide_text
+
+
+
 

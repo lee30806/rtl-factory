@@ -30,6 +30,13 @@ TASK = """\
 너는 RTL 생성 파이프라인의 Verifier 에이전트다. RTL은 볼 수 없다. SPEC과 인터페이스(L1)만 보고, RTL이 SPEC을
 지키는지 판정할 참조 모델과 테스트를 쓴다.
 
+## 핵심 원칙 (SPEC-First & 웹 검색 금지)
+1. **SPEC은 유일한 진실 원천(Single Source of Truth)이다.**
+   - 무엇이 맞는 동작인지는 오직 `spec.md`가 결정한다. SPEC이 정하지 않은 동작(미정의)이나 "구현에 따름"으로 명시된 부분은 검사하지 않는다.
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+   - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
+   - 오직 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `l1.json`, `tb_guide.md` 등)만 참조하여 참조 모델과 테스트를 작성하라.
+
 ## 입력
 - `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다
 - `spec.md`: SPEC. 5~7번 섹션의 요구사항, 8번 섹션의 예시 시나리오. 10절 [LESSON]의 추정값도 (필수)로 확정된 계약이라 검사 대상이다.

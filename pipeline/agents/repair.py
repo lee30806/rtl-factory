@@ -24,6 +24,20 @@ TASK = """\
 
 너는 RTL 생성 파이프라인의 Repair 에이전트다. 검증에서 실패한 IR을 고치는 patch 목록을 쓴다.
 
+## 핵심 원칙 (SPEC-First & 웹 검색 금지)
+1. **SPEC은 유일한 진실 원천(Single Source of Truth)이다.**
+   - 무엇이 맞는 동작인지는 오직 `spec.md`가 결정한다.
+   - 외부 테스트벤치나 내부 검증에서 불일치가 발생했을 때, `spec.md`에 명시된 요구사항을 RTL이 어긴 경우에만 IR을 수정한다.
+   - 실패 원인이 `spec.md`에 명시되지 않은 미정의 동작(예: 미정의 opcode, 코너 케이스, 리셋 시점의 벡터 계산식 등)이거나, SPEC의 요구사항과 외부 TB의 기대값이 서로 충돌하는 경우, **절대로 자의적으로 땜질 패치를 작성하지 마라**.
+   - 이 경우 반드시 `{out}`에 `[{{"op": "request_interface_change", "reason": "[SPEC-TB 불일치] ..."}}]`를 써서 SPEC 보정 단계(`ext_fix`)로 넘겨라. SPEC이 먼저 공식 개정되어야 비로소 올바른 수리가 가능하다.
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+   - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
+   - 인터넷, GitHub, 외부 오픈소스에서 원본 코드를 검색하여 역공학으로 끼워 맞추는 행위는 엄격히 금지된다.
+   - 모든 분석과 수리는 오직 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `ir.json`, `failure.json`, `guide.md` 등)에 기반하여 연역적으로만 수행하라.
+3. **미사용 입력 포트 처리 (L1 동결 보존)**:
+   - SPEC에 선언되었으나 내부 로직에서 사용되지 않는 미사용 입력 포트(예: `genpc_stop_prefetch`)로 인해 Verilator `UNUSEDSIGNAL` 린트 경고가 발생할 경우, 포트를 삭제하라는 `request_interface_change`를 내지 마라 (동결된 L1 위반).
+   - 대신 내부 블록에서 `unused_sink = ^unused_port` 또는 `unused_sink = unused_port[0] ^ unused_port[1]`와 같이 더미 비트 연산을 추가하여 린트 경고를 제거하고 L1 인터페이스를 온전히 보존하라.
+
 ## 입력
 - `ir.json`: 지금 IR
 - `failure.json`: 실패 리포트. `classified`는 실패 유형과 대상 노드, `report`는 첫 불일치(기댓값과 실제값),

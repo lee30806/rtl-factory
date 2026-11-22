@@ -17,6 +17,8 @@
         "",
         "--strict-mcp-config",
         "--disable-slash-commands",
+        "--disallowed-tools",
+        "WebSearch WebFetch",
         "--no-session-persistence",
         "--output-format",
         "json"
@@ -44,6 +46,8 @@
         "",
         "--strict-mcp-config",
         "--disable-slash-commands",
+        "--disallowed-tools",
+        "WebSearch WebFetch",
         "--no-session-persistence",
         "--output-format",
         "json"
