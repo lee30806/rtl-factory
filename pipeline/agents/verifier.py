@@ -36,6 +36,9 @@ TASK = """\
 2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
    - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
    - 오직 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `l1.json`, `tb_guide.md` 등)만 참조하여 참조 모델과 테스트를 작성하라.
+3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
+   - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 반영한다.**
+   - 참조 모델과 테스트벤치는 임의의 스키마 단순화가 아닌 SPEC 원문의 엄밀한 요구사항을 기준으로 검증해야 한다.
 
 ## 입력
 - `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다

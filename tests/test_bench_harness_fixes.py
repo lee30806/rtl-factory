@@ -11,9 +11,30 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.bench.adapters import chipverilog as cv  # noqa: E402
-from experiments.bench.common.ext_fix import chipverilog_tb_files, tb_is_self_checking  # noqa: E402
-from experiments.bench.common.runner import add_usage, dir_usage, task_usage  # noqa: E402
+EXP_ROOT = (ROOT / "experiments") if (ROOT / "experiments").exists() else (ROOT / "src" / "rtl_factory")
+PIPELINE_ROOT = (ROOT / "pipeline") if (ROOT / "pipeline").exists() else (ROOT / "src" / "rtl_factory" / "pipeline")
+GOLDEN_ROOT = (ROOT / "tests" / "golden") if (ROOT / "tests" / "golden").exists() else Path("/Users/sjlee/Workspace/Project/rtl-factory/tests/golden")
+
+if (ROOT / "experiments").exists():
+    from experiments.bench.adapters import chipverilog as cv  # noqa: E402
+    from experiments.bench.adapters import realbench as rb_adapter  # noqa: E402
+    from experiments.bench.common.ext_fix import chipverilog_tb_files, tb_is_self_checking  # noqa: E402
+    from experiments.bench.common.runner import add_usage, dir_usage, task_usage, header_directives  # noqa: E402
+    from experiments.bench.common import to_spec as ts  # noqa: E402
+    from experiments.bench.common import metrics as bench_metrics  # noqa: E402
+    from experiments.bench.common import schema as bench_schema  # noqa: E402
+    from experiments.bench.common import modules as bench_modules  # noqa: E402
+    from experiments.bench.common import mismatch_trace as mt  # noqa: E402
+else:
+    from src.rtl_factory.bench.adapters import chipverilog as cv  # noqa: E402
+    from src.rtl_factory.bench.adapters import realbench as rb_adapter  # noqa: E402
+    from src.rtl_factory.bench.common.ext_fix import chipverilog_tb_files, tb_is_self_checking  # noqa: E402
+    from src.rtl_factory.bench.common.runner import add_usage, dir_usage, task_usage, header_directives  # noqa: E402
+    from src.rtl_factory.bench.common import to_spec as ts  # noqa: E402
+    from src.rtl_factory.bench.common import metrics as bench_metrics  # noqa: E402
+    from src.rtl_factory.bench.common import schema as bench_schema  # noqa: E402
+    from src.rtl_factory.bench.common import modules as bench_modules  # noqa: E402
+    from src.rtl_factory.bench.common import mismatch_trace as mt  # noqa: E402
 from pipeline.agents.runner import parse_usage  # noqa: E402
 
 CV_JSONL = ROOT / "build" / "cvdp_datasets" / "cvdp_chipverilog.jsonl"
@@ -45,7 +66,7 @@ def test_grader_defect_only_for_tool_verdicts():
 
 def test_scheduler_stops_repair_on_grader_defect():
     """외부 채점 결과의 grader_defect가 E2 항목에 실리고, 모든 실패가 채점 결함이면 Repair 전에 멈추는 분기가 있다."""
-    src = (ROOT / "pipeline" / "scheduler" / "run.py").read_text(encoding="utf-8")
+    src = (PIPELINE_ROOT / "scheduler" / "run.py").read_text(encoding="utf-8")
     assert '"grader_defect": "" if ext_ok else str(ext_r.get("grader_defect") or "")' in src
     i_stop, i_repair = src.index('self.review("GRADER_DEFECT"'), src.index('if st["repairs"] >= limit:')
     assert i_stop < i_repair
@@ -126,7 +147,7 @@ def test_chipverilog_rebuilds_only_broken_i2c_headers(tmp_path: Path):
 
 
 def test_reset_traits_follow_port_line_and_multibit_is_not_clock(tmp_path: Path):
-    from experiments.bench.common.to_spec import infer_reset_and_clock_traits, port_reset_traits
+    infer_reset_and_clock_traits, port_reset_traits = ts.infer_reset_and_clock_traits, ts.port_reset_traits
     assert port_reset_traits(DESC, "nReset") == ("low", True)
     assert port_reset_traits(DESC, "rst") == ("high", False)
     assert port_reset_traits(DESC, "clk") == (None, None)
@@ -136,7 +157,7 @@ def test_reset_traits_follow_port_line_and_multibit_is_not_clock(tmp_path: Path)
 
 @needs_cv
 def test_i2c_domain_reset_is_the_async_one(tmp_path: Path):
-    from experiments.bench.common.to_spec import extract_header_l1
+    extract_header_l1 = ts.extract_header_l1
     it = next(i for i in cv.load_chipverilog(CV_JSONL, tmp_path / "src") if i.id == "cvdp_chipverilog_i2c_master_bit_ctrl_0013")
     l1, _, notes = extract_header_l1(it, tmp_path / "x")
     assert [(d["clock"], d["reset"]["port"], d["reset"]["active"], d["reset"]["async"]) for d in l1["domains"]] == [("clk", "nReset", "low", True)]
@@ -145,7 +166,7 @@ def test_i2c_domain_reset_is_the_async_one(tmp_path: Path):
 
 @needs_cv
 def test_fpu_header_extracts_without_rejected_cell(tmp_path: Path):
-    from experiments.bench.common.to_spec import extract_header_l1
+    extract_header_l1 = ts.extract_header_l1
     it = next(i for i in cv.load_chipverilog(CV_JSONL, tmp_path / "src") if i.id == "cvdp_chipverilog_fpu_0004")
     l1, _, notes = extract_header_l1(it, tmp_path / "x")
     assert len(l1["ports"]) >= 10 and any("셀 없이 헤더를 추출" in x for x in notes["lessons"])
@@ -153,8 +174,7 @@ def test_fpu_header_extracts_without_rejected_cell(tmp_path: Path):
 
 def test_header_directives_go_to_top_file_end_not_grader(tmp_path: Path):
     """헤더의 `define은 채점기가 아니라 rtl-factory 방출 단계가 Block Top 파일 끝에 넣는다 (소스맵 줄 번호 유지)."""
-    from experiments.bench.common.runner import header_directives
-    from experiments.bench.common.schema import BenchItem
+    BenchItem = bench_schema.BenchItem
     from pipeline.scheduler.run import with_directives
     it = BenchItem("chipverilog", "x", "standalone", "t", "", "`define W 16\n`ifdef A\nmodule t(input [`W:0] a);\nendmodule\n")
     assert header_directives(it) == "`define W 16"
@@ -162,7 +182,7 @@ def test_header_directives_go_to_top_file_end_not_grader(tmp_path: Path):
     out = with_directives(body, True, "`define W 16")
     assert out.startswith(body.rstrip("\n")) and out.rstrip().endswith("`define W 16")
     assert with_directives(body, False, "`define W 16") == body and with_directives(body, True, "") == body
-    src = (ROOT / "experiments" / "bench" / "adapters" / "chipverilog.py").read_text(encoding="utf-8")
+    src = (EXP_ROOT / "bench" / "adapters" / "chipverilog.py").read_text(encoding="utf-8")
     assert "hdr_defs" not in src                       # 채점기는 후보를 고치지 않는다
 
 
@@ -184,7 +204,7 @@ def test_mixed_timescale_gets_default_without_waiver(tmp_path: Path):
 @needs_cv
 def test_header_gets_cell_includes_when_macros_used(tmp_path: Path):
     """헤더가 매크로를 쓰면 셀의 찾을 수 있는 `include를 헤더 앞에 둔다: 셀 없이 추출해도 같은 포트. E2"""
-    from experiments.bench.common.to_spec import extract_header_l1
+    extract_header_l1 = ts.extract_header_l1
     it = next(i for i in cv.load_chipverilog(CV_JSONL, tmp_path / "src") if "if_stage" in i.id)
     with_cells = [p["name"] for p in extract_header_l1(it, tmp_path / "a")[0]["ports"]]
     it.cells = []
@@ -227,7 +247,7 @@ def test_stage_budget_must_match_spec_latency(tmp_path: Path):
 
 def test_latency_hint_is_a_lower_bound_from_stage_annotations():
     """원문이 레지스터에 Stage-N을 붙이면 최소 단 수를 힌트로 주고, 6절이 정하지 않거나 더 작으면 다시 쓰게 한다. 같거나 크면 통과. E5"""
-    from experiments.bench.common.to_spec import latency_hint, latency_hint_errors
+    latency_hint, latency_hint_errors = ts.latency_hint, ts.latency_hint_errors
     prompt = "reg out_0: Stage-0 pipeline copy of the output.\nreg out_1: Stage-1 pipeline copy of the output.\n"
     assert latency_hint(prompt)[0] == 2
     assert latency_hint("source_1, source_2, source_3 feed the pipeline hazard check")[0] is None   # 단 번호 없는 접미만으로는 정하지 않음
@@ -238,8 +258,8 @@ def test_latency_hint_is_a_lower_bound_from_stage_annotations():
 
 
 def test_summary_counts_grader_defect_items():
-    from experiments.bench.common.metrics import summarize
-    from experiments.bench.common.schema import BenchResult
+    summarize = bench_metrics.summarize
+    BenchResult = bench_schema.BenchResult
     bad = BenchResult("chipverilog", "a", "s", "a", True, candidates={
         "c0": {"bench_eval": {"ok": False, "status": "equivalence_error", "grader_defect": "x"}},
         "c1": {"bench_eval": {"ok": False, "status": "equivalence_timeout", "grader_defect": "y"}}})
@@ -251,7 +271,7 @@ def test_summary_counts_grader_defect_items():
 
 def test_clock_reset_from_code_annotations_and_port_lines():
     """클럭·리셋은 쓰임새(감응 목록, 헤더 주석, 포트 설명 첫 마디)로 먼저 찾고 이름은 마지막 수단이다."""
-    from experiments.bench.common.to_spec import CLK_RE, RST_RE, clock_reset_evidence
+    CLK_RE, RST_RE, clock_reset_evidence = ts.CLK_RE, ts.RST_RE, ts.clock_reset_evidence
     code = "always @(posedge clk or negedge rst_n) begin : P\n if (rst_n == 1'b0) q <= 0; else q <= d; end"
     ev = clock_reset_evidence(["rst_n", "d"], "", [code])               # 셀의 clk는 최상위 포트가 아니어도 rst_n은 리셋
     assert ev["resets"] == {"rst_n": {"active": "low", "async": True}} and ev["clocks"] == {}
@@ -272,8 +292,8 @@ def test_clock_reset_from_code_annotations_and_port_lines():
 
 def test_reset_lesson_matches_final_judgment(tmp_path: Path):
     """헤더 주석이 비동기 리셋을 정하면 '동기로 정했다' 같은 문장 추정 LESSON을 남기지 않는다."""
-    from experiments.bench.common.schema import BenchItem
-    from experiments.bench.common.to_spec import extract_header_l1
+    BenchItem = bench_schema.BenchItem
+    extract_header_l1 = ts.extract_header_l1
     hdr = ("module t (input pclk, input presetn, input [7:0] d, output reg [7:0] q);\nendmodule\n"
            "// @clock pclk posedge\n// @reset presetn active-low async\n")
     l1, _, notes = extract_header_l1(BenchItem("cvdp", "t", "cid003", "t", "A register.", hdr), tmp_path)
@@ -284,8 +304,8 @@ def test_reset_lesson_matches_final_judgment(tmp_path: Path):
 
 def test_prompt_doc_structure_reset_extraction_and_domain_refine(tmp_path: Path):
     """완성된 RTL이 없을 때 마크다운 문서 블록·자연어 문장에서 클럭/리셋 구조를 추출하고, SpecWriter의 2절 리셋 속성 보정을 허용한다."""
-    from experiments.bench.common.schema import BenchItem
-    from experiments.bench.common.to_spec import extract_header_l1, infer_reset_and_clock_traits
+    BenchItem = bench_schema.BenchItem
+    extract_header_l1, infer_reset_and_clock_traits = ts.extract_header_l1, ts.infer_reset_and_clock_traits
     from pipeline.agents import spec_writer
     from pipeline.importer import spec_tables
     from pipeline.spec.l1 import block_top_l1
@@ -317,15 +337,15 @@ def test_prompt_doc_structure_reset_extraction_and_domain_refine(tmp_path: Path)
     lessons.clear()
 
     # 4) 완성된 RTL 코드가 있는 경우(조합 assign 포함) 더미 순차 블록을 주입하지 않고 코드 구조 그대로 반환
-    from experiments.bench.common.to_spec import _inject_dummy_seq_if_empty
+    _inject_dummy_seq_if_empty = ts._inject_dummy_seq_if_empty
     comb_rtl = "module comb_m(input clk, input rst, input a, output y);\n  assign y = a;\nendmodule\n"
     (tmp_path / "comb").mkdir(exist_ok=True)
     aug = _inject_dummy_seq_if_empty(comb_rtl, "comb_m", rb_crc, [], {}, {}, tmp_path / "comb")
     assert "always" not in aug.read_text(encoding="utf-8")
 
     # 5) interface_diff 및 allow_domain_refine: 외부 포트·파라미터는 고정하되 2절 리셋 동기/극성 변경은 허용
-    base_spec = ROOT / "tests" / "golden" / "axis_cobs_decode" / "block_spec.md"
-    ir = json.loads((ROOT / "tests" / "golden" / "axis_cobs_decode" / "ir" / "axis_cobs_decode.ir.json").read_text())
+    base_spec = GOLDEN_ROOT / "axis_cobs_decode" / "block_spec.md"
+    ir = json.loads((GOLDEN_ROOT / "axis_cobs_decode" / "ir" / "axis_cobs_decode.ir.json").read_text())
     head, rest = base_spec.read_text().split("\n## 2.", 1)
     async_md = spec_tables.tables_md(ir).replace("| high | 동기 |", "| high | 비동기 |")
     spec_text = head + "\n" + async_md + rest[rest.index("\n## 5."):].replace("rst=1을 본 다음 사이클부터", "rst=1인 동안")
@@ -429,7 +449,7 @@ def test_internal_pipeline_bugfixes_and_sv_testbench_mode(tmp_path: Path):
 
 def test_realbench_cell_module_deduplication(tmp_path: Path):
     """RealBench 어댑터 및 runner에서 동일 모듈이 여러 셀 파일(rtl/submodules vs tb/)에 있을 때 중복 제거 검증."""
-    from experiments.bench.common.modules import module_names
+    module_names = bench_modules.module_names
 
     f1 = tmp_path / "cell1.v"
     f1.write_text("module shared_fifo(input clk); endmodule\n", encoding="utf-8")
@@ -474,8 +494,12 @@ def test_architect_gate_rejects_cell_port_names_not_in_cell(tmp_path: Path):
 
 def test_mismatch_trace_summary_and_realbench_hint_formats():
     """신호별 첫 불일치와 전후 창. 기대값의 x 비트는 비교하지 않는다. RealBench TB의 두 가지 불일치 문구를 모두 읽는다."""
-    from experiments.bench.adapters.realbench import diagnose
-    from experiments.bench.common import mismatch_trace as mt
+    if (ROOT / "experiments").exists():
+        from experiments.bench.adapters.realbench import diagnose
+        from experiments.bench.common import mismatch_trace as mt
+    else:
+        from src.rtl_factory.bench.adapters.realbench import diagnose
+        from src.rtl_factory.bench.common import mismatch_trace as mt
     rows = [{"cyc": i, "time": str(10 * i + 5), "ins": {"en": "1", "ack": "1" if i == 3 else "0"},
              "exp": {"cyc_o": "0" if i >= 4 else "1", "dat": "x" * 4},
              "act": {"cyc_o": "1", "dat": "0101"}} for i in range(8)]
@@ -494,7 +518,7 @@ def test_mismatch_trace_summary_and_realbench_hint_formats():
 @pytest.mark.skipif(not __import__("shutil").which("iverilog"), reason="iverilog 없음")
 def test_equivalence_counterexample_shows_async_reset_difference(tmp_path: Path):
     """등가로만 채점하는 문제의 반례: 정답(비동기 리셋)과 후보(동기 리셋)를 같은 입력으로 돌려 첫 불일치를 찾는다 (register_file)."""
-    from experiments.bench.common.schema import BenchItem, EvalSpec
+    BenchItem, EvalSpec = bench_schema.BenchItem, bench_schema.EvalSpec
     ref = tmp_path / "des" / "r.v"
     ref.parent.mkdir()
     ref.write_text("module r(input clk, input rst, input [3:0] d, output reg [3:0] q);\n"
@@ -648,6 +672,37 @@ def test_temporary_scratch_files_auto_cleanup_on_success():
     task_text = task_p.read_text(encoding="utf-8")
     assert "critical_stray = [v for v in stray if not v.startswith(\"추가: \")]" in task_text
     assert "p.unlink(missing_ok=True)" in task_text
+
+
+def test_spec_priority_over_schema_and_dynamic_reset():
+    """스펙 요구사항 최우선 원칙(SPEC-First vs Schema/Lint) 및 probe V3 dynamic reset 허용 검증."""
+    for role_file in ("repair.py", "author.py", "verifier.py", "arbiter.py", "architect.py", "spec_writer.py"):
+        p = ROOT / "pipeline" / "agents" / role_file
+        if not p.exists():
+            p = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / role_file
+        txt = p.read_text(encoding="utf-8")
+        assert "스펙 요구사항 최우선 원칙" in txt
+        assert "SPEC-First vs Schema/Lint Constraints" in txt
+
+    guide_path = ROOT / "pipeline" / "agents" / "prompts" / "ir_guide.md"
+    if not guide_path.exists():
+        guide_path = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "prompts" / "ir_guide.md"
+    guide_text = guide_path.read_text(encoding="utf-8")
+    assert "동적 리셋 및 스펙-스키마 충돌 시 스펙 최우선 원칙" in guide_text
+
+    to_spec_p = ROOT / "experiments" / "bench" / "common" / "to_spec.py"
+    if not to_spec_p.exists():
+        to_spec_p = ROOT / "src" / "rtl_factory" / "bench" / "common" / "to_spec.py"
+    to_spec_text = to_spec_p.read_text(encoding="utf-8")
+    assert "스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints):" in to_spec_text
+
+    # probe.py에서 localparam 대신 wire로 reset을 검사하여 dynamic ternary reset 표현식을 통과시키는지 검증
+    probe_p = ROOT / "pipeline" / "validator" / "probe.py"
+    if not probe_p.exists():
+        probe_p = ROOT / "src" / "rtl_factory" / "pipeline" / "validator" / "probe.py"
+    probe_text = probe_p.read_text(encoding="utf-8")
+    assert "wire {s.type} __rst_{s.name} = ({s.reset});" in probe_text
+
 
 
 

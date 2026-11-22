@@ -73,13 +73,13 @@ def build(m: Module, library: dict[str, Module] | None = None) -> Probe:
             p.add(f'    {v["type"]} {v["name"]};', "V4", node)
         p.add(f["body"], "V4", node)
         p.add("  " + function_tail(f), "V4", node)
-    # 리셋값은 대상의 타입으로 상수 대입이 되는지 본다.
+    # 리셋값은 대상의 타입으로 대입이 되는지 본다 (SPEC-First 원칙: SPEC이 요구하는 동적 리셋 식도 수용하도록 wire로 검사).
     for port in m.ports:
         if port.reset is not None:
-            p.add(f"  localparam {port.type} __rst_{port.name} = {port.reset};", "V3", f"ports/{port.name}/reset")
+            p.add(f"  wire {port.type} __rst_{port.name} = ({port.reset});", "V3", f"ports/{port.name}/reset")
     for s in m.signals:
         if s.reset is not None:
-            p.add(f"  localparam {s.type} __rst_{s.name} = {s.reset};", "V3", f"signals/{s.name}/reset")
+            p.add(f"  wire {s.type} __rst_{s.name} = ({s.reset});", "V3", f"signals/{s.name}/reset")
     for b in m.blocks:
         if b["kind"] == "fsm":
             p.add(f'  localparam {b["state_type"]} __rst_{b["id"]} = {b["reset_state"]};', "V3", f'blocks/{b["id"]}/reset_state')

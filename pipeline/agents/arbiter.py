@@ -34,6 +34,9 @@ SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 �
 2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
    - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
    - 오직 작업 디렉터리의 로컬 파일(`spec.md`, `mismatch.json`, `test.py` 등)만 보고 논리적으로 판정하라.
+3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
+   - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 반영한다.**
+   - RTL이나 테스트벤치가 스키마 제약으로 인해 SPEC의 요구사항(예: 동적 비동기 리셋, 특수 인터페이스 등)을 왜곡하거나 누락한 경우, SPEC을 위반한 쪽의 결함으로 엄격히 판정한다.
 
 ## 입력
 - `spec_guide.md`: SPEC 읽기 안내. 절마다 목적과 구속력이 적혀 있다. `spec.md`보다 먼저 읽는다

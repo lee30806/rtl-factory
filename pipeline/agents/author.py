@@ -39,6 +39,10 @@ TASK = """\
 3. **미사용 입력 포트 처리 (L1 동결 보존)**:
    - SPEC L1에 정의되었으나 기능상 불필요한 미사용 입력 포트가 있더라도 포트를 누락시키지 않는다.
    - Verilator `UNUSEDSIGNAL` 린트 경고를 방지하기 위해 내부 블록에 `unused_sink = ^unused_port` 또는 더미 연산을 포함하여 L1 인터페이스를 완벽히 유지하라.
+4. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
+   - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 반영한다.**
+   - SPEC이 런타임 입력 신호(예: `except_prefix`)에 따라 달라지는 동적 리셋 값이나 복합 초기화 수식을 요구할 경우, 스키마나 린트 제약을 핑계로 상수로 임의 축소하거나 `request_interface_change`를 내지 마라.
+   - 신호 선언의 `reset` 필드에 동적 삼항 연산식(`(except_prefix ? val1 : val2)`)을 직접 기술하거나, 순차 블록 내부에서 SPEC이 명시한 동작을 그대로 구현하여 SPEC의 요구사항을 반드시 온전히 충족시켜야 한다.
 
 ## 입력
 - `l1.json`: 동결된 L1 (module, role, params, domains, ports){children}

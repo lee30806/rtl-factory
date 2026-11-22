@@ -36,6 +36,9 @@ TASK = """\
 2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
    - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
    - 오직 작업 디렉터리에 제공된 로컬 파일(`template.md`, `tables.md`, `source/`, `notes.json` 등)만 참조하여 SPEC을 작성하라.
+3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
+   - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 명세한다.**
+   - 하위 도구나 IR 스키마의 제약(예: 상수 리셋 기대 등)을 의식하여 원본 명세의 동적 제어나 특수 인터페이스를 임의로 단순화하거나 왜곡하지 마라. 원본 동작이 요구하는 진실을 그대로 명세화해야 한다.
 
 ## 입력
 - `template.md`: SPEC 작성 템플릿. 형식 규칙(제목, 섹션 이름과 순서, 요구사항 줄, 시나리오 표, 열린 질문)을 그대로 따른다
