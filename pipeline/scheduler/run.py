@@ -239,6 +239,9 @@ class Run:
         l1 = {k: top[k] for k in ("module", "role", "params", "domains", "ports") if k in top}
         approved: dict[int, list[dict]] = {}
         for p in todo:
+            if p["decision"]["decision"] == "approved" and not isinstance(p["verifier"], int):
+                # 외부 TB 기댓값 수정안 (이전 실행이 남긴 것): 공식 TB는 고칠 수 없으므로 거절로 처리한다
+                p["decision"] = {**p["decision"], "decision": "rejected", "note": "공식 외부 TB는 수정할 수 없음"}
             if p["decision"]["decision"] == "approved":
                 approved.setdefault(p["verifier"], []).append(p)
         for k, items in sorted(approved.items()):
@@ -766,6 +769,11 @@ class Run:
                           arbiter.check(self.spec_path))
         vj = json.loads(Path(ares.outputs[arbiter.OUT]).read_text()) if ares.ok else {"verdict": "spec_ambiguous"}
         verdict = vj["verdict"]
+        if verdict != "rtl_wrong" and (v.get("is_external") or v.get("verifier") == "ext"):
+            # 공식 외부 TB는 고칠 수 없다: 기댓값 수정안 대신 Repair로 보낸다 (SPEC 보정은 외부 수정 라운드가 맡음)
+            self.review("EXTERNAL_TB_FIXED", f"{gname} 후보 {c}: Arbiter가 외부 TB를 {verdict}로 판정했으나 공식 채점 기준은 "
+                        f"고칠 수 없어 Repair로 보냄 ({str(vj.get('reason', ''))[:200]})", str(ares.workdir), "arbiter")
+            verdict = vj["verdict"] = "rtl_wrong"
         keys = {m: f"{m}/c{c}" for m in mods}
 
         def save_all(**upd):

@@ -634,5 +634,22 @@ def test_no_web_search_and_spec_first_guidelines():
     assert "unused_sink" in guide_text
 
 
+def test_temporary_scratch_files_auto_cleanup_on_success():
+    """에이전트가 검사(check)를 통과한 후 잔여 임시 파일이 있더라도 자동 정리되고 성공 판정되는지 검증."""
+    to_spec_p = ROOT / "experiments" / "bench" / "common" / "to_spec.py"
+    if not to_spec_p.exists():
+        to_spec_p = ROOT / "src" / "rtl_factory" / "bench" / "common" / "to_spec.py"
+    to_spec_text = to_spec_p.read_text(encoding="utf-8")
+    assert "쓰기 범위 엄수 및 임시 파일 정리" in to_spec_text
+
+    task_p = ROOT / "pipeline" / "agents" / "task.py"
+    if not task_p.exists():
+        task_p = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / "task.py"
+    task_text = task_p.read_text(encoding="utf-8")
+    assert "critical_stray = [v for v in stray if not v.startswith(\"추가: \")]" in task_text
+    assert "p.unlink(missing_ok=True)" in task_text
+
+
+
 
 

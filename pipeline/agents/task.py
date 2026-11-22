@@ -150,10 +150,23 @@ def run_task(cfg: AgentConfig, task: Task, work: Path, check: Callable[[Path], l
         if not errors and check:
             errors = check(work)
         # 입력 파일을 고치거나 쓰기 범위 밖에 파일을 만들면 되돌리고 다시 시킨다 (Repair가 out/patches.json 대신 ir.json을 직접 고침)
-        if attempts <= retries and (stray := scope_violations(before, snapshot(work, exclude))):
-            errors = [f"쓰기 범위 밖 변경 (되돌림): {v}. 입력 파일은 고치지 말고 {', '.join(task.write_scope)} 안의 출력 파일만 쓴다"
-                      for v in stray[:10]] + errors
-            restore(task, work, before, exclude)
+        stray = scope_violations(before, snapshot(work, exclude))
+        if stray:
+            critical_stray = [v for v in stray if not v.startswith("추가: ")]
+            if not errors and not critical_stray:
+                # 검사 통과 및 출력 파일 정상인 상태에서 단순 임시 파일 추가는 자동 정리 후 성공으로 인정
+                for v in stray:
+                    if v.startswith("추가: "):
+                        rel = v.split("추가: ", 1)[1].strip()
+                        p = work / rel
+                        if p.is_file() or p.is_symlink():
+                            p.unlink(missing_ok=True)
+                        elif p.is_dir():
+                            shutil.rmtree(p, ignore_errors=True)
+            elif attempts <= retries:
+                errors = [f"쓰기 범위 밖 변경 (되돌림): {v}. 입력 파일은 고치지 말고 {', '.join(task.write_scope)} 안의 출력 파일만 쓴다"
+                          for v in stray[:10]] + errors
+                restore(task, work, before, exclude)
         runs.append({"attempt": attempts, "returncode": r.returncode, "timed_out": r.timed_out,
                      "duration_s": round(r.duration_s, 1), "stdout_tail": r.stdout_tail[-1500:],
                      "stderr_tail": r.stderr_tail[-1500:], "errors": errors[:20], **({"usage": r.usage} if r.usage else {})})
@@ -161,6 +174,18 @@ def run_task(cfg: AgentConfig, task: Task, work: Path, check: Callable[[Path], l
             break
         text = task.text + RETRY.format(n=attempts, errors="\n".join(f"- {e}" for e in errors[:20]))
     violations = scope_violations(before, snapshot(work, exclude))
+    if not errors and violations:
+        critical = [v for v in violations if not v.startswith("추가: ")]
+        if not critical:
+            for v in violations:
+                if v.startswith("추가: "):
+                    rel = v.split("추가: ", 1)[1].strip()
+                    p = work / rel
+                    if p.is_file() or p.is_symlink():
+                        p.unlink(missing_ok=True)
+                    elif p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+            violations = []
     outs = {o: str(work / o) for o in task.outputs if (work / o).exists()}
     res = TaskResult(task.name, task.role, cfg.name, str(work), not errors and not violations, attempts,
                      round(time.monotonic() - t0, 1), outs, [o for o in task.outputs if o not in outs], violations,
