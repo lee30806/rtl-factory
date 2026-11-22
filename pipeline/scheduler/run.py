@@ -648,10 +648,12 @@ class Run:
                 e2.append({"verifier": "ext", "ok": ext_ok, "findings": findings, "out": str(ext_dir),
                            "is_external": True,
                            "grader_defect": "" if ext_ok else str(ext_r.get("grader_defect") or "")})
+        ext_entry = next((x for x in e2 if x.get("verifier") == "ext"), None)
+        e2_ok = bool(ext_entry.get("ok")) if (self.co_verify and ext_entry is not None) else all(x["ok"] for x in e2)
         return {"e1": [{"type": c.type, "node": c.node, "module": c.module, "message": c.message[:200],
                         "severity": c.source.get("severity")} for c in e1c],
                 "e2": e2, "py_equiv": py_equiv,
-                "ok": all(x["ok"] for x in e2 + py_equiv) and not any(c.type == "lint_fragment" for c in e1c)}
+                "ok": e2_ok and all(x["ok"] for x in py_equiv) and not any(c.type == "lint_fragment" for c in e1c)}
 
     @staticmethod
     def result_name(out: Path, tests: list[str]) -> str | None:
@@ -969,7 +971,7 @@ class Run:
                 if verdict in ("test_wrong", "spec_ambiguous"):
                     break
             # 같은 테스트가 Repair를 거듭해도 같은 이유로 실패: 테스트 쪽 문제일 수 있으므로 상한 전에 Arbiter가 판정한다 (P8 회고)
-            sig = json.dumps(sorted([x["verifier"], sorted({f["test"] for f in x["findings"] if f["test"]})] for x in failed))
+            sig = json.dumps(sorted([[str(x["verifier"]), sorted({f["test"] for f in x["findings"] if f["test"]})] for x in failed]))
             first = sts[mods[0]]
             n = first.get("fail_sig_n", 0) + 1 if failed and first.get("fail_sig") == sig else 1
             save_all(fail_sig=sig, fail_sig_n=n)
