@@ -725,6 +725,56 @@ def test_spec_priority_over_schema_and_dynamic_reset():
     assert why is not None and "상수를 읽을 수 없음" in why
 
 
+def test_zero_leakage_isolation_and_log_sanitization(tmp_path: Path):
+    """정답 RTL 및 호스트 데이터셋 경로 마스킹, equivalence.log 원문 차단, mismatch_trace MAX_INPUTS 확대, Zero-Leakage 지침 검증."""
+    if (ROOT / "experiments").exists():
+        from experiments.bench.common import ext_fix as ef
+    else:
+        from src.rtl_factory.bench.common import ext_fix as ef
+
+    BenchItem = bench_schema.BenchItem
+    ref_path = "/Users/sjlee/Workspace/Project/pymtl/build/datasets/ChipVerilog/Des/or1200/or1200_genpc/or1200_genpc.v"
+    item = BenchItem("chipverilog", "or1200_genpc", "standalone", "or1200_genpc", "prompt", "module or1200_genpc(); endmodule",
+                     reference_rtl=[ref_path])
+
+    # 1) sanitize_log_text가 정답 RTL 경로와 데이터셋 경로를 <REDACTED_REF>로 마스킹하는지 확인
+    raw_log = f"3. Executing Verilog-2005 frontend: {ref_path}\nParsing /opt/build/datasets/RealBench/aes/rtl/aes.v"
+    clean_log = ef.sanitize_log_text(raw_log, item)
+    assert ref_path not in clean_log
+    assert "or1200_genpc.v" not in clean_log
+    assert "/datasets/RealBench" not in clean_log
+    assert "<REDACTED_REF>" in clean_log
+
+    # 2) make_task가 equivalence.log를 제외하고 로그 내용을 마스킹하는지 확인
+    spec_f = tmp_path / "spec.md"
+    spec_f.write_text("# or1200_genpc SPEC\n", encoding="utf-8")
+    tb_d = tmp_path / "tb"
+    tb_d.mkdir()
+    eq_f = tmp_path / "equivalence.log"
+    eq_f.write_text(raw_log, encoding="utf-8")
+    cex_f = tmp_path / "counterexample.log"
+    cex_f.write_text(f"cex from {ref_path}", encoding="utf-8")
+    cands = {"c0": {"rtl": [], "result": {"ok": False, "log_tail": f"fail at {ref_path}"}, "logs": [eq_f, cex_f]}}
+    task = ef.make_task(item, "external_fail", spec_f, "tables", "module or1200_genpc(); endmodule", tb_d, cands, {})
+    assert "candidates/c0/equivalence.log" not in task.inputs
+    assert "candidates/c0/counterexample.log" in task.inputs
+    assert ref_path not in str(task.inputs["candidates/c0/counterexample.log"])
+    assert ref_path not in str(task.inputs["candidates/c0/result.json"])
+
+    # 3) mismatch_trace.MAX_INPUTS >= 32 확인 (16개 이상 입력 모듈에서 제어 신호 잘림 방지)
+    assert mt.MAX_INPUTS >= 32
+
+    # 4) 모든 에이전트 및 ext_fix, to_spec에 Zero-Leakage Isolation 규칙 명시 확인
+    assert "Zero-Leakage Isolation" in ef.TASK
+    assert "Zero-Leakage Isolation" in ts.BENCH_SPEC_TASK
+    for role_file in ("repair.py", "author.py", "verifier.py", "arbiter.py", "architect.py", "spec_writer.py"):
+        p = ROOT / "pipeline" / "agents" / role_file
+        if not p.exists():
+            p = ROOT / "src" / "rtl_factory" / "pipeline" / "agents" / role_file
+        assert "Zero-Leakage Isolation" in p.read_text(encoding="utf-8")
+
+
+
 
 
 

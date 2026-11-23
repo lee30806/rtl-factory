@@ -33,9 +33,10 @@ TASK = """\
 ## 핵심 원칙 (SPEC-First & 웹 검색 금지)
 1. **SPEC은 유일한 진실 원천(Single Source of Truth)이다.**
    - 무엇이 맞는 동작인지는 오직 `spec.md`가 결정한다. SPEC이 정하지 않은 동작(미정의)이나 "구현에 따름"으로 명시된 부분은 검사하지 않는다.
-2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch / Zero-Leakage Isolation)**:
    - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
-   - 오직 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `l1.json`, `tb_guide.md` 등)만 참조하여 참조 모델과 테스트를 작성하라.
+   - 현재 작업 디렉터리(`.`) 바깥의 호스트 파일 시스템(상위 디렉터리 `..`, `/Users/...`, `build/datasets/...`, 원본/정답 RTL 파일 등)을 탐색하거나 읽는 행위는 엄격히 금지된다.
+   - 오직 현재 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `l1.json`, `tb_guide.md` 등)만 참조하여 참조 모델과 테스트를 작성하라.
 3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
    - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 반영한다.**
    - 참조 모델과 테스트벤치는 임의의 스키마 단순화가 아닌 SPEC 원문의 엄밀한 요구사항을 기준으로 검증해야 한다.

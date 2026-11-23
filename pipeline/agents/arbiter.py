@@ -31,9 +31,10 @@ SPEC을 근거로 어느 쪽이 맞는지 판정한다. RTL 코드는 볼 수 �
      - **외부 TB 실패 (`external_tb.ok == false`)**:
        - 실패 원인이 SPEC 5~7절, 9절에 명시된 요구사항을 RTL이 어긴 것이면 **반드시 `rtl_wrong`으로 판정**한다.
        - 그러나 실패 원인이 **SPEC에 명시되지 않은 미정의 동작(예: 미정의 opcode, 코너 케이스, 미정의 리셋 벡터 등)이거나 SPEC과 외부 TB 간의 불일치**인 경우, 자의적 패치를 유도하지 말고 **`spec_ambiguous`**로 판정하거나 proposal에 `[SPEC-TB 불일치]에 따른 SPEC 보정(ext_fix) 필요`를 명시하여 SPEC이 먼저 개정되도록 유도한다.
-2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch / Zero-Leakage Isolation)**:
    - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
-   - 오직 작업 디렉터리의 로컬 파일(`spec.md`, `mismatch.json`, `test.py` 등)만 보고 논리적으로 판정하라.
+   - 현재 작업 디렉터리(`.`) 바깥의 호스트 파일 시스템(상위 디렉터리 `..`, `/Users/...`, `build/datasets/...`, 원본/정답 RTL 파일 등)을 탐색하거나 읽는 행위는 엄격히 금지된다.
+   - 오직 현재 작업 디렉터리의 로컬 파일(`spec.md`, `mismatch.json`, `test.py` 등)만 보고 논리적으로 판정하라.
 3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
    - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 반영한다.**
    - RTL이나 테스트벤치가 스키마 제약으로 인해 SPEC의 요구사항(예: 동적 비동기 리셋, 특수 인터페이스 등)을 왜곡하거나 누락한 경우, SPEC을 위반한 쪽의 결함으로 엄격히 판정한다.

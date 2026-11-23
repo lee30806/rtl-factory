@@ -733,7 +733,14 @@ def run_and_score(item: BenchItem, run_dir: Path, eval_root: Path, spec_path: Pa
 
     def ext_tb_fn(sv_files, _top, eval_dir):
         r = evaluate_rtl(item, sv_files, eval_dir)
-        return r if r.get("ok") else {**r, "tb_files": tb_files}
+        if not r.get("ok"):
+            r = {
+                **r,
+                "log_tail": ext_fix.sanitize_log_text(str(r.get("log_tail", "")), item),
+                "diagnosis": ext_fix.sanitize_log_text(str(r.get("diagnosis", "")), item),
+                "tb_files": tb_files,
+            }
+        return r
 
     use_ext_tb = ext_tb_fn if (co_verify or skip_verifier) else None
 
@@ -888,7 +895,8 @@ def _ext_fix_spec(item: BenchItem, rdir: Path, trigger: str, spec_path: Path, ou
         if not c["bench_eval"].get("stage"):
             continue
         # 로그: RTLLM은 eval/<c>/tb/ 바로 아래, ChipVerilog 공식 도구는 result_root/rtlf/<모듈>/<모듈>_t1/ 아래
-        logs = [f for name in ("compile.log", "sim.log", "mismatch_trace.log", "counterexample.log", "equivalence.log")
+        # equivalence.log 원문은 Yosys reference_precheck의 정답 RTL 호스트 경로 유출을 막기 위해 제외 (요약은 result.json 및 counterexample.log에 포함됨)
+        logs = [f for name in ("compile.log", "sim.log", "mismatch_trace.log", "counterexample.log")
                 for f in sorted((eval_root / ck / "tb").rglob(name)) if "trace" not in f.parent.name][:6]
         cands[ck] = {"rtl": sorted((eval_root / ck / "rtl").glob("*.sv")),
                      "result": {"pipeline_ok": c["pipeline_ok"], **c["bench_eval"]}, "logs": logs}

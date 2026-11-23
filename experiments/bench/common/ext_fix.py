@@ -27,6 +27,24 @@ OUT = "out/spec.md"
 CHANGES = "out/changes.json"
 ALARM = "[SPEC 재검토 알람]"
 
+_HOST_DATASET_PATH_RE = re.compile(
+    r"/(?:[^\s\"'`()\[\]{}:;,]*/)*(?:datasets|ChipVerilog|Des|RealBench|RTLLM|cvdp_datasets)(?:/[^\s\"'`()\[\]{}:;,]*)*"
+)
+
+
+def sanitize_log_text(text: str, item: BenchItem | None = None) -> str:
+    """로그 텍스트에서 정답 RTL(reference_rtl) 및 호스트 데이터셋 경로를 <REDACTED_REF>로 마스킹하여 유출을 차단한다."""
+    if not text:
+        return text
+    if item is not None:
+        for ref_p in (item.reference_rtl or []):
+            candidates = {str(ref_p), str(Path(ref_p).resolve()), str(Path(ref_p).parent), str(Path(ref_p).resolve().parent)}
+            for p_str in sorted(candidates, key=len, reverse=True):
+                if p_str and p_str != ".":
+                    text = text.replace(p_str, "<REDACTED_REF>")
+    return _HOST_DATASET_PATH_RE.sub("<REDACTED_REF>", text)
+
+
 SITUATION = {
     "external_fail": "모든 후보가 외부 테스트벤치에서 실패했다.",
     "internal_mismatch": "외부 테스트벤치를 통과한 후보가 있지만, 파이프라인 내부 검증(Verifier 테스트, Arbiter 판정)이 그 후보를 "
@@ -41,6 +59,16 @@ TASK = """\
 {situation}
 외부 테스트벤치가 이 설계의 최종 기준이다. 외부 테스트벤치가 기대하는 동작을 SPEC이 하나로 정하도록 고친 SPEC 전체를 `{out}`에 쓴다.
 고친 SPEC으로 파이프라인이 RTL과 내부 테스트를 처음부터 다시 만든다.
+
+## 핵심 원칙 (완전 격리 & SPEC-First & 외부 탐색/웹 검색 절대 금지)
+1. **작업 디렉터리 외부 파일 시스템 접근 및 정답 RTL 탐색 절대 금지 (Zero-Leakage Isolation)**:
+   - 현재 작업 디렉터리(`.`) 내부에 제공된 로컬 파일(`spec.md`, `prompt.txt`, `header.sv`, `tables.md`, `template.md`, `tb/`, `candidates/`, `internal.json`) 외에 상위 디렉터리(`..`)나 호스트 파일 시스템(예: `/Users/...`, `build/datasets/...`, 원본 정답 RTL 파일 등)을 탐색하거나 읽는 행위는 엄격히 금지된다.
+   - 오직 작업 디렉터리에 제공된 외부 테스트벤치(`tb/`)와 반례/시뮬레이션 로그(`candidates/c<k>/counterexample.log`, `mismatch_trace.log`, `sim.log`, `result.json`)의 입출력 데이터만을 근거로 기대 동작을 연역적으로 추론하라.
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+   - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
+3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
+   - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 명세한다.**
+   - 하위 도구나 IR 스키마의 제약을 의식하여 외부 테스트벤치나 반례가 요구하는 동적 리셋(`except_prefix` 분기 등)이나 특수 제어 동작을 임의로 상수로 축소하거나 생략하지 마라.
 
 ## 입력
 - `spec.md`: 지금 SPEC
@@ -98,29 +126,44 @@ def make_task(item: BenchItem, trigger: str, spec_path: Path, tables: str, heade
     for ck, c in candidates.items():
         for f in c["rtl"]:
             inputs[f"candidates/{ck}/rtl/{Path(f).name}"] = Path(f)
-        inputs[f"candidates/{ck}/result.json"] = json.dumps(c["result"], ensure_ascii=False, indent=1)
+        res_json = json.dumps(c["result"], ensure_ascii=False, indent=1)
+        inputs[f"candidates/{ck}/result.json"] = sanitize_log_text(res_json, item)
         for f in c["logs"]:
-            inputs[f"candidates/{ck}/{Path(f).name}"] = Path(f)
+            p = Path(f)
+            if p.name == "equivalence.log":
+                continue
+            log_txt = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
+            inputs[f"candidates/{ck}/{p.name}"] = sanitize_log_text(log_txt, item)
     text = TASK.format(top=item.top, situation=SITUATION[trigger], out=OUT, changes=CHANGES, alarm=ALARM)
     return Task("spec_writer", f"bench_extfix/{item.id}", text, inputs=inputs, outputs=[OUT, CHANGES], write_scope=["out/"])
 
 
-def check(top_l1: dict, prev_text: str):
-    """SPEC 게이트, SPEC이 바뀌었는지, 수정 사유(changes.json)와 재검토 알람이 있는지."""
+def check(top_l1: dict, prev_text: str, item: BenchItem | None = None):
+    """SPEC 게이트, SPEC이 바뀌었는지, 수정 사유(changes.json)와 재검토 알람이 있는지, 호스트 데이터셋 경로 유출이 없는지."""
     spec_check = spec_writer.check(top_l1, prev_text, allow_domain_refine=True)
 
     def _check(work: Path) -> list[str]:
         errs = spec_check(work)
         try:
-            changes = json.loads((work / CHANGES).read_text(encoding="utf-8"))
+            changes_raw = (work / CHANGES).read_text(encoding="utf-8")
+            changes = json.loads(changes_raw)
         except (OSError, json.JSONDecodeError) as e:
             return errs + [f"수정 사유를 읽을 수 없음 ({CHANGES}): {e}"]
         if not isinstance(changes, list) or not changes:
             return errs + [f"{CHANGES}는 바꾼 내용이 하나 이상인 JSON 배열이어야 함"]
         try:
+            spec_raw = (work / OUT).read_text(encoding="utf-8")
             spec = load_spec(work / OUT)
         except (OSError, UnicodeDecodeError):
             return errs
+        for doc_name, doc_txt in ((OUT, spec_raw), (CHANGES, changes_raw)):
+            if _HOST_DATASET_PATH_RE.search(doc_txt):
+                errs.append(f"격리 위반 (Zero-Leakage): {doc_name}에 호스트 데이터셋 또는 정답 RTL 경로 참조가 포함됨")
+            elif item is not None:
+                for ref_p in (item.reference_rtl or []):
+                    if str(ref_p) in doc_txt or str(Path(ref_p).resolve()) in doc_txt:
+                        errs.append(f"격리 위반 (Zero-Leakage): {doc_name}에 정답 RTL 절대 경로 참조가 포함됨")
+                        break
         known = {r.id for r in spec.requirements}
         for i, c in enumerate(changes):
             if not isinstance(c, dict):
@@ -153,7 +196,7 @@ def revise_spec(item: BenchItem, work_dir: Path, trigger: str, spec_path: Path, 
     else:
         agent_work, run_root = work_dir / "agent_work", None
     prev = Path(spec_path).read_text(encoding="utf-8")
-    res = run_task(cfg, task, agent_work, check=check(top_l1, prev), retries=roles.limits.get("agent_retries", 2), run_root=run_root)
+    res = run_task(cfg, task, agent_work, check=check(top_l1, prev, item=item), retries=roles.limits.get("agent_retries", 2), run_root=run_root)
     if not res.ok:
         return None, [], res.errors, res
     out = work_dir / "spec.md"

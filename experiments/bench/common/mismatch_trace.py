@@ -10,9 +10,9 @@ from __future__ import annotations
 
 WINDOW_BEFORE = 6
 WINDOW_AFTER = 1
-MAX_INPUTS = 12
-MAX_OUTPUTS = 6
-MAX_CHARS = 3000
+MAX_INPUTS = 32
+MAX_OUTPUTS = 12
+MAX_CHARS = 6000
 
 
 def differs(exp: str, act: str) -> bool:

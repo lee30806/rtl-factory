@@ -33,9 +33,10 @@ TASK = """\
 ## 핵심 원칙 (SPEC-First & 완전성)
 1. **SPEC-First를 위한 완결성 있는 SPEC 작성**:
    - 원본 명세나 외부 TB 반례(ext_fix)로부터 SPEC을 작성하거나 개정할 때, Author와 Repair가 외부 소스나 웹 검색을 볼 필요가 전혀 없도록 **모든 코너 케이스, 리셋 시점의 초기 벡터 계산식, 미정의 opcode/동작의 default 처리 규칙**을 5~7절 및 10절에 명시적으로 빠짐없이 기술한다.
-2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch / Zero-Leakage Isolation)**:
    - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
-   - 오직 작업 디렉터리에 제공된 로컬 파일(`template.md`, `tables.md`, `source/`, `notes.json` 등)만 참조하여 SPEC을 작성하라.
+   - 현재 작업 디렉터리(`.`) 바깥의 호스트 파일 시스템(상위 디렉터리 `..`, `/Users/...`, `build/datasets/...`, 원본/정답 RTL 파일 등)을 탐색하거나 읽는 행위는 엄격히 금지된다.
+   - 오직 현재 작업 디렉터리에 제공된 로컬 파일(`template.md`, `tables.md`, `source/`, `notes.json` 등)만 참조하여 SPEC을 작성하라.
 3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
    - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 명세한다.**
    - 하위 도구나 IR 스키마의 제약(예: 상수 리셋 기대 등)을 의식하여 원본 명세의 동적 제어나 특수 인터페이스를 임의로 단순화하거나 왜곡하지 마라. 원본 동작이 요구하는 진실을 그대로 명세화해야 한다.

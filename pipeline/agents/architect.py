@@ -40,9 +40,10 @@ TASK = """\
 ## 핵심 원칙 (SPEC-First & 웹 검색 금지)
 1. **SPEC은 유일한 진실 원천(Single Source of Truth)이다.**
    - SPEC 5~7절, 9절의 요구사항과 제약을 모듈 분할에 정확히 반영하며, SPEC에 명시되지 않은 가상의 신호나 기능을 임의로 추가하지 않는다.
-2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch)**:
+2. **웹 검색 및 외부 역공학 절대 금지 (NO WebSearch / NO WebFetch / Zero-Leakage Isolation)**:
    - `search_web`, `WebSearch`, `WebFetch` 등 웹 검색이나 외부 네트워크 접근 도구를 절대로 호출하지 마라.
-   - 오직 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `block_top.json`, `guide.md` 등)만 참조하여 모듈 트리를 설계하라.
+   - 현재 작업 디렉터리(`.`) 바깥의 호스트 파일 시스템(상위 디렉터리 `..`, `/Users/...`, `build/datasets/...`, 원본/정답 RTL 파일 등)을 탐색하거나 읽는 행위는 엄격히 금지된다.
+   - 오직 현재 작업 디렉터리에 제공된 로컬 파일(`spec.md`, `block_top.json`, `guide.md` 등)만 참조하여 모듈 트리를 설계하라.
 3. **스펙 요구사항 최우선 원칙 (SPEC-First vs Schema/Lint Constraints)**:
    - **SPEC 요구사항과 IR 스키마 또는 정적 린트 규칙 간에 충돌이 발생할 경우, 항상 SPEC 요구사항을 최우선으로 반영한다.**
    - SPEC의 인터페이스 및 동작 요구사항을 스키마나 도구 제약으로 인해 임의로 변경하거나 축소하지 마라.
