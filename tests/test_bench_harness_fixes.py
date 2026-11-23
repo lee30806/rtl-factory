@@ -703,6 +703,27 @@ def test_spec_priority_over_schema_and_dynamic_reset():
     probe_text = probe_p.read_text(encoding="utf-8")
     assert "wire {s.type} __rst_{s.name} = ({s.reset});" in probe_text
 
+    # pysim.supported()가 동적 리셋 표현식(non-literal reset)을 가진 lang: py 모듈에서 FragError로 크래시하지 않고 skip 사유를 반환하는지 검증
+    from pipeline.ir.model import Module
+    from pipeline.ir.pysim import supported
+    dyn_py_ir = {
+        "module": "dyn_rst_m",
+        "role": "module",
+        "lang": "py",
+        "params": [],
+        "domains": [{"name": "clk_d", "clock": "clk", "reset": {"port": "rst", "active": "high", "async": True}}],
+        "ports": [
+            {"name": "except_prefix", "dir": "input", "type": "logic", "domain": "clk_d"},
+            {"name": "q", "dir": "output", "type": "logic [29:0]", "domain": "clk_d", "kind": "reg",
+             "reset": "(except_prefix ? 30'h3c00_003f : 30'h0000_003f)"}
+        ],
+        "signals": [],
+        "blocks": [{"id": "b_seq", "kind": "seq", "domain": "clk_d", "reads": [], "writes": ["q"], "body": "q = q + 1"}]
+    }
+    m = Module(dyn_py_ir)
+    why = supported(m, {"dyn_rst_m": m})
+    assert why is not None and "상수를 읽을 수 없음" in why
+
 
 
 

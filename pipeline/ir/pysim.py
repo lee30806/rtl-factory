@@ -86,45 +86,45 @@ class _Scope:
                 raise SimError(f'{m.name}: tristate는 최상위 모듈에서만 실행함 (inout은 top과 block_top 경계)')
         try:
             self.wd = Widths.of(m.source_raw, params)
+            self.consts, self.width = self.wd.consts, self.wd.width
+            storage = m.storage()
+            # 실행할 블록: 원문(Python)을 다시 파싱해 쓴다
+            src = {b["id"]: b for b in m.source_raw.get("blocks", [])}
+            self.combs: list[list[ast.stmt]] = []
+            self.seqs: list[tuple[str, list[ast.stmt], list[tuple[str, int]]]] = []
+            self.fsms: list[tuple[str, str, int, dict[int, list[tuple[ast.expr, int]]]]] = []
+            self.cells: list[dict] = []
+            self.tris: list[dict] = []
+            for b in m.blocks:
+                sb = src.get(b["id"], b)
+                if b["kind"] == "comb":
+                    self.combs.append(parse_body(sb["body"]))
+                elif b["kind"] == "memory":
+                    continue
+                elif b["kind"] == "tristate":
+                    self.tris.append(b)
+                elif b["kind"] in CELLS:
+                    self.cells.append(b)
+                elif b["kind"] == "seq":
+                    resets = [(n, parse_literal(storage[n].reset, self.width[n], self.consts))
+                              for n in b["writes"] if storage[n].reset is not None]
+                    self.seqs.append((b["domain"], parse_body(sb["body"]), resets))
+                else:
+                    trs: dict[int, list[tuple[ast.expr, int]]] = {}
+                    for t in sb["transitions"]:
+                        trs.setdefault(self.consts[t["from"]], []).append((parse_expr(t["cond"]), self.consts[t["to"]]))
+                    self.fsms.append((b["domain"], f'{b["state_name"]}_q', self.consts[b["reset_state"]], trs))
+            # function/task: 본문마다 인자와 지역 변수만 가진 이름 공간 (모듈 신호는 인자로만 들어옴. 재귀는 Validator가 막음)
+            self.fns: dict[str, tuple[dict, list[ast.stmt], _Scope]] = {}
+            srcf = {f["name"]: f for f in m.source_raw.get("functions", [])}
+            for f in m.functions:
+                fsc = _Scope.__new__(_Scope)
+                fsc.sim, fsc.m, fsc.prefix = types.SimpleNamespace(val={}), m, ""
+                fsc.wd = self.wd.fn_scope(f["name"])
+                fsc.consts, fsc.width, fsc.fns = fsc.wd.consts, fsc.wd.width, self.fns
+                self.fns[f["name"]] = (f, parse_body(srcf.get(f["name"], f)["body"]), fsc)
         except FragError as e:
             raise SimError(f"{m.name}: {e}") from None
-        self.consts, self.width = self.wd.consts, self.wd.width
-        storage = m.storage()
-        # 실행할 블록: 원문(Python)을 다시 파싱해 쓴다
-        src = {b["id"]: b for b in m.source_raw.get("blocks", [])}
-        self.combs: list[list[ast.stmt]] = []
-        self.seqs: list[tuple[str, list[ast.stmt], list[tuple[str, int]]]] = []
-        self.fsms: list[tuple[str, str, int, dict[int, list[tuple[ast.expr, int]]]]] = []
-        self.cells: list[dict] = []
-        self.tris: list[dict] = []
-        for b in m.blocks:
-            sb = src.get(b["id"], b)
-            if b["kind"] == "comb":
-                self.combs.append(parse_body(sb["body"]))
-            elif b["kind"] == "memory":
-                continue
-            elif b["kind"] == "tristate":
-                self.tris.append(b)
-            elif b["kind"] in CELLS:
-                self.cells.append(b)
-            elif b["kind"] == "seq":
-                resets = [(n, parse_literal(storage[n].reset, self.width[n], self.consts))
-                          for n in b["writes"] if storage[n].reset is not None]
-                self.seqs.append((b["domain"], parse_body(sb["body"]), resets))
-            else:
-                trs: dict[int, list[tuple[ast.expr, int]]] = {}
-                for t in sb["transitions"]:
-                    trs.setdefault(self.consts[t["from"]], []).append((parse_expr(t["cond"]), self.consts[t["to"]]))
-                self.fsms.append((b["domain"], f'{b["state_name"]}_q', self.consts[b["reset_state"]], trs))
-        # function/task: 본문마다 인자와 지역 변수만 가진 이름 공간 (모듈 신호는 인자로만 들어옴. 재귀는 Validator가 막음)
-        self.fns: dict[str, tuple[dict, list[ast.stmt], _Scope]] = {}
-        srcf = {f["name"]: f for f in m.source_raw.get("functions", [])}
-        for f in m.functions:
-            fsc = _Scope.__new__(_Scope)
-            fsc.sim, fsc.m, fsc.prefix = types.SimpleNamespace(val={}), m, ""
-            fsc.wd = self.wd.fn_scope(f["name"])
-            fsc.consts, fsc.width, fsc.fns = fsc.wd.consts, fsc.wd.width, self.fns
-            self.fns[f["name"]] = (f, parse_body(srcf.get(f["name"], f)["body"]), fsc)
         for n, w in self.width.items():
             sim.width[prefix + n] = w
             sim.val.setdefault(prefix + n, 0)
@@ -642,6 +642,6 @@ def supported(top: Module, library: dict[str, Module]) -> str | None:
     """실행할 수 없으면 이유, 있으면 None."""
     try:
         PySim(top, library)
-    except (SimError, KeyError) as e:
+    except (SimError, FragError, KeyError) as e:
         return str(e)
     return None
